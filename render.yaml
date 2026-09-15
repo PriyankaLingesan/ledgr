@@ -35,8 +35,18 @@ services:
     # Migrations run before every deploy, reusing the exact command
     # docker-compose's `migrate` service already runs locally - just without
     # the demo seed step, so production starts with schema only, no data.
+    #
+    # Invoked via the venv's own python (`/opt/venv/bin/python`, exactly what
+    # backend/Dockerfile installs dependencies into - see the `python -m venv
+    # /opt/venv` + `ENV PATH="/opt/venv/bin:$PATH"` lines there), not the bare
+    # `alembic`/`uvicorn` console scripts: Render's Docker runtime does not
+    # guarantee this image's Dockerfile `PATH` is applied when a custom
+    # dockerCommand runs alongside dashboard-configured env vars, which
+    # previously failed with "sh: 1: alembic: not found" (exit 127).
+    # `python -m <module>` resolves the module directly against that
+    # interpreter's own installed packages, independent of shell PATH.
     dockerCommand: >-
-      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers"
+      sh -c "/opt/venv/bin/python -m alembic upgrade head && /opt/venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers"
     envVars:
       - key: DATABASE_URL
         fromDatabase:
