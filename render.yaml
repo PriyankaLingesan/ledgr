@@ -36,17 +36,14 @@ services:
     # docker-compose's `migrate` service already runs locally - just without
     # the demo seed step, so production starts with schema only, no data.
     #
-    # Invoked via the venv's own python (`/opt/venv/bin/python`, exactly what
-    # backend/Dockerfile installs dependencies into - see the `python -m venv
-    # /opt/venv` + `ENV PATH="/opt/venv/bin:$PATH"` lines there), not the bare
-    # `alembic`/`uvicorn` console scripts: Render's Docker runtime does not
-    # guarantee this image's Dockerfile `PATH` is applied when a custom
-    # dockerCommand runs alongside dashboard-configured env vars, which
-    # previously failed with "sh: 1: alembic: not found" (exit 127).
-    # `python -m <module>` resolves the module directly against that
-    # interpreter's own installed packages, independent of shell PATH.
-    dockerCommand: >-
-      sh -c "/opt/venv/bin/python -m alembic upgrade head && /opt/venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers"
+    # A multi-word "sh -c '... && ...'" string here did NOT survive intact
+    # through Render's dockerCommand handling (deploy log showed the whole
+    # line glued together and looked up as one nonexistent command - not a
+    # missing Python path; verified /opt/venv/bin/python exists and works).
+    # A bare path to a script baked into the image (backend/docker-
+    # entrypoint.sh) has no spaces or shell operators for anything to
+    # mis-tokenize, so all the shell logic lives there instead of here.
+    dockerCommand: /srv/ledgr/docker-entrypoint.sh
     envVars:
       - key: DATABASE_URL
         fromDatabase:

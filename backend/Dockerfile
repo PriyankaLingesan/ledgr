@@ -31,6 +31,8 @@ COPY app ./app
 COPY alembic ./alembic
 COPY alembic.ini ./
 COPY pyproject.toml ./
+COPY docker-entrypoint.sh ./
+RUN chmod +x docker-entrypoint.sh
 
 USER ledgr
 EXPOSE 8000
