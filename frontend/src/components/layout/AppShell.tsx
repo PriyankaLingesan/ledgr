@@ -18,6 +18,7 @@ import {
   Plus,
   RefreshCw,
   ScrollText,
+  Sparkles,
   Sun,
   Wallet,
   X,
@@ -37,6 +38,7 @@ const NAV = [
   { to: '/app/accounts', label: 'Accounts', icon: Wallet, end: false },
   { to: '/app/transactions', label: 'Transactions', icon: ArrowLeftRight, end: false },
   { to: '/app/ledger', label: 'Ledger explorer', icon: BookOpen, end: false },
+  { to: '/app/intelligence', label: 'LEDGR Intelligence', icon: Sparkles, end: false },
   { to: '/app/audit', label: 'Audit log', icon: ScrollText, end: false },
   { to: '/app/about', label: 'About', icon: Info, end: false },
 ];

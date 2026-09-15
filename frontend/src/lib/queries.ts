@@ -6,15 +6,20 @@ import { buildQuery, newIdempotencyKey, request, type QueryValue } from './api';
 import type {
   Account,
   AccountBalance,
+  AIStatus,
+  AskLedgerAnswer,
   AuditEvent,
   Currency,
+  ExplainTransaction,
   Health,
   IntegrityReport,
+  LedgerBrief,
   LedgerEntry,
   Page,
   SystemStats,
   Transaction,
   TransactionCreate,
+  TransactionProposal,
 } from './types';
 
 export const keys = {
@@ -31,6 +36,8 @@ export const keys = {
   transaction: (id: string) => ['transaction', id] as const,
   entries: (params: Record<string, QueryValue>) => ['entries', params] as const,
   audit: (params: Record<string, QueryValue>) => ['audit', params] as const,
+  aiStatus: ['ai', 'status'] as const,
+  ledgerBrief: (days: number) => ['ai', 'ledger-brief', days] as const,
 };
 
 export function useHealth() {
@@ -186,5 +193,62 @@ export function useCreateAccount() {
       allows_negative_balance?: boolean;
     }) => request<Account>('/accounts', { method: 'POST', body }),
     onSuccess: () => invalidateLedger(client),
+  });
+}
+
+// --- LEDGR Intelligence ----------------------------------------------------
+//
+// Every AI feature here is read-only or proposal-only from the frontend's
+// point of view: none of these hooks post a transaction. Reviewing and
+// posting an AI proposal is still `useCreateTransaction()` above, called
+// with the proposal's own `post_body` - the same mutation, same endpoint,
+// same idempotency handling as a hand-typed transaction.
+
+export function useAIStatus() {
+  return useQuery({
+    queryKey: keys.aiStatus,
+    queryFn: () => request<AIStatus>('/ai/status'),
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+}
+
+/** Real facts always; AI phrasing only when configured - so this never errors
+ *  the way the other AI hooks can, and is safe to keep a long staleTime on:
+ *  the "Refresh" action on the widget is what re-triggers the LLM call. */
+export function useLedgerBrief(days = 1) {
+  return useQuery({
+    queryKey: keys.ledgerBrief(days),
+    queryFn: () => request<LedgerBrief>(`/ai/ledger-brief${buildQuery({ days })}`),
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+}
+
+export function useProposeTransaction() {
+  return useMutation({
+    mutationFn: (description: string) =>
+      request<TransactionProposal>('/ai/transactions/propose', {
+        method: 'POST',
+        body: { description },
+      }),
+  });
+}
+
+export function useAskLedger() {
+  return useMutation({
+    mutationFn: (question: string) =>
+      request<AskLedgerAnswer>('/ai/ask', { method: 'POST', body: { question } }),
+  });
+}
+
+/** A GET on the backend, wrapped as a mutation here: it's an on-demand
+ *  operator action ("Explain with AI"), not data the page should fetch on
+ *  its own or silently refetch - the same reasoning as the ledger brief's
+ *  explicit refresh button, applied to a button that runs once per click. */
+export function useExplainTransaction() {
+  return useMutation({
+    mutationFn: (transactionId: string) =>
+      request<ExplainTransaction>(`/ai/transactions/${transactionId}/explain`),
   });
 }

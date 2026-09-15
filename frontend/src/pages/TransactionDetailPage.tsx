@@ -11,6 +11,7 @@ import { ArrowLeftRight, ChevronRight, RotateCcw, Undo2 } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
+import { ExplainTransactionPanel } from '../components/ai/ExplainTransactionPanel';
 import { PageHeader } from '../components/layout/AppShell';
 import {
   AccountRef,
@@ -295,6 +296,8 @@ export default function TransactionDetailPage() {
               credits={transaction.total_credits}
               balanced={transaction.balanced}
             />
+
+            <ExplainTransactionPanel transactionId={transaction.id} />
 
             <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
               <Panel className="overflow-hidden xl:col-span-2">

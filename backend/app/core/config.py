@@ -50,6 +50,28 @@ class Settings(BaseSettings):
     default_page_size: int = 50
     max_page_size: int = 200
 
+    # --- AI (LEDGR Intelligence) -------------------------------------------
+    # Deliberately provider-agnostic: the AI layer is an assistant bolted onto
+    # a deterministic ledger, never the other way round, so it is entirely
+    # legitimate for it to be unconfigured. When it is, `ai_configured` is
+    # False and every AI endpoint answers with a clear "unavailable" error -
+    # the core ledger (accounts, transactions, posting) never checks this
+    # flag and never depends on it.
+    ai_provider: str = Field(default="", description="'' (disabled) | 'anthropic' | 'openai'")
+    ai_model: str = Field(default="")
+    ai_api_key: str = Field(default="")
+    ai_base_url: str = Field(
+        default="", description="Override, e.g. for an OpenAI-compatible proxy"
+    )
+    ai_max_tool_iterations: int = Field(
+        default=4, description="Cap on tool-call round trips per Ask LEDGR question"
+    )
+    ai_request_timeout_seconds: float = 30.0
+
+    @property
+    def ai_configured(self) -> bool:
+        return bool(self.ai_provider and self.ai_model and self.ai_api_key)
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_origins(cls, value: object) -> object:

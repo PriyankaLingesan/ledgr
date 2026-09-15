@@ -6,13 +6,14 @@
  * server enforces the same rule again - this is a convenience, not the control.
  */
 
-import { AlertCircle, Check, Plus, RefreshCw, ShieldCheck, Trash2, X } from 'lucide-react';
+import { AlertCircle, Check, Plus, RefreshCw, ShieldCheck, Sparkles, Trash2, X } from 'lucide-react';
 import { useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 import { PageHeader } from '../components/layout/AppShell';
 import { Amount, BalanceAssertion } from '../components/ledger/atoms';
 import {
+  Badge,
   Button,
   Field,
   IconButton,
@@ -24,9 +25,20 @@ import {
 } from '../components/ui/primitives';
 import { ApiError, newIdempotencyKey } from '../lib/api';
 import { cn } from '../lib/cn';
-import { parseAmountToMinor } from '../lib/format';
+import { exponentFor, parseAmountToMinor } from '../lib/format';
 import { useAccounts, useCreateTransaction, useCurrencies } from '../lib/queries';
-import type { Account, EntryDirection } from '../lib/types';
+import type { Account, EntryDirection, TransactionCreate } from '../lib/types';
+
+/**
+ * A reviewed AI proposal arrives here as ordinary router state - the same
+ * `TransactionCreate` shape `POST /transactions` expects, because that is
+ * exactly where "Post" on this page still sends it. Nothing about how a
+ * transaction gets validated or posted changes based on where its initial
+ * values came from.
+ */
+interface AIPrefillState {
+  aiProposal: TransactionCreate;
+}
 
 interface DraftEntry {
   key: string;
@@ -50,19 +62,30 @@ const ACCOUNT_TYPE_ORDER = ['ASSET', 'LIABILITY', 'EQUITY', 'REVENUE', 'EXPENSE'
 
 export default function NewTransactionPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { data: currencies } = useCurrencies();
   const createTransaction = useCreateTransaction();
 
-  const [currency, setCurrency] = useState('USD');
-  const [description, setDescription] = useState('');
-  const [reference, setReference] = useState('');
-  const [externalReference, setExternalReference] = useState('');
+  const prefill = (location.state as AIPrefillState | null)?.aiProposal ?? null;
+  const [fromAI] = useState(Boolean(prefill));
+
+  const [currency, setCurrency] = useState(prefill?.currency ?? 'USD');
+  const [description, setDescription] = useState(prefill?.description ?? '');
+  const [reference, setReference] = useState(prefill?.reference ?? '');
+  const [externalReference, setExternalReference] = useState(prefill?.external_reference ?? '');
   const [effectiveAt, setEffectiveAt] = useState('');
   const [idempotencyKey, setIdempotencyKey] = useState(() => newIdempotencyKey());
-  const [entries, setEntries] = useState<DraftEntry[]>([
-    emptyEntry('DEBIT'),
-    emptyEntry('CREDIT'),
-  ]);
+  const [entries, setEntries] = useState<DraftEntry[]>(() => {
+    if (!prefill) return [emptyEntry('DEBIT'), emptyEntry('CREDIT')];
+    const exponent = exponentFor(prefill.currency);
+    return prefill.entries.map((entry) => ({
+      key: Math.random().toString(36).slice(2),
+      accountId: entry.account_id,
+      direction: entry.direction,
+      amount: (entry.amount_minor / 10 ** exponent).toFixed(exponent),
+      memo: entry.memo ?? '',
+    }));
+  });
 
   // Only ACTIVE accounts can receive entries, so only those are offered.
   const accountsQuery = useAccounts({ limit: 200, offset: 0, status: 'ACTIVE' });
@@ -165,6 +188,18 @@ export default function NewTransactionPage() {
       />
 
       <div className="space-y-4 px-5 py-6 sm:px-8">
+        {fromAI && (
+          <div className="flex items-center gap-2.5 rounded-md border border-accent/30 bg-accent-soft px-4 py-2.5 text-[0.8125rem] text-accent-ink">
+            <Sparkles className="h-4 w-4 shrink-0" strokeWidth={1.8} />
+            <span>
+              <Badge tone="accent" className="mr-2">
+                AI suggestion
+              </Badge>
+              Review and edit before posting - nothing here is saved yet.
+            </span>
+          </div>
+        )}
+
         <Panel>
           <PanelHeader title="Transaction" description="Applies to every entry below" />
           <div className="grid grid-cols-1 gap-3 px-4 py-4 md:grid-cols-4">

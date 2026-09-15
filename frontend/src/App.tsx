@@ -7,6 +7,7 @@ import AccountDetailPage from './pages/AccountDetailPage';
 import AccountsPage from './pages/AccountsPage';
 import AuditPage from './pages/AuditPage';
 import DashboardPage from './pages/DashboardPage';
+import IntelligencePage from './pages/IntelligencePage';
 import LedgerPage from './pages/LedgerPage';
 import AboutMarketingPage from './pages/marketing/AboutPage';
 import LandingPage from './pages/marketing/LandingPage';
@@ -40,6 +41,7 @@ export default function App() {
         element={<Console><TransactionDetailPage /></Console>}
       />
       <Route path="/app/ledger" element={<Console><LedgerPage /></Console>} />
+      <Route path="/app/intelligence" element={<Console><IntelligencePage /></Console>} />
       <Route path="/app/audit" element={<Console><AuditPage /></Console>} />
       <Route path="/app/about" element={<Console><AboutPage /></Console>} />
       <Route path="/app/*" element={<Navigate to="/app" replace />} />

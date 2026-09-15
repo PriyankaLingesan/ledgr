@@ -5,7 +5,9 @@ Kept apart from the posting engine: reads have completely different concerns
 """
 
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
+from typing import Literal
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
@@ -15,6 +17,8 @@ from app.models.audit import AuditEvent
 from app.models.enums import EntryDirection, TransactionKind, TransactionStatus
 from app.models.ledger_entry import LedgerEntry
 from app.models.transaction import Transaction
+
+TransactionOrder = Literal["posted_desc", "amount_desc"]
 
 # --------------------------------------------------------------------------
 # transactions
@@ -31,6 +35,7 @@ def list_transactions(
     account_id: uuid.UUID | None = None,
     posted_from: datetime | None = None,
     posted_to: datetime | None = None,
+    order: TransactionOrder = "posted_desc",
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[list[Transaction], int]:
@@ -68,6 +73,9 @@ def list_transactions(
 
     total = db.execute(select(func.count(Transaction.id)).where(*filters)).scalar_one()
 
+    order_clause = (
+        Transaction.total_debits_minor.desc() if order == "amount_desc" else Transaction.seq.desc()
+    )
     rows = (
         db.execute(
             select(Transaction)
@@ -76,7 +84,7 @@ def list_transactions(
                 selectinload(Transaction.reversed_by),
             )
             .where(*filters)
-            .order_by(Transaction.seq.desc())
+            .order_by(order_clause)
             .limit(limit)
             .offset(offset)
         )
@@ -84,6 +92,83 @@ def list_transactions(
         .all()
     )
     return list(rows), int(total)
+
+
+@dataclass(frozen=True)
+class CurrencyActivity:
+    currency: str
+    transaction_count: int
+    total_minor: int
+    largest_transaction_id: uuid.UUID | None
+    largest_transaction_reference: str | None
+    largest_amount_minor: int
+
+
+@dataclass(frozen=True)
+class LedgerSummary:
+    posted_from: datetime | None
+    posted_to: datetime | None
+    by_currency: list[CurrencyActivity]
+
+    @property
+    def transaction_count(self) -> int:
+        return sum(row.transaction_count for row in self.by_currency)
+
+
+def ledger_summary(
+    db: Session,
+    *,
+    posted_from: datetime | None = None,
+    posted_to: datetime | None = None,
+) -> LedgerSummary:
+    """Aggregate posting activity over a window, grouped by currency.
+
+    One SQL aggregate query, not "fetch everything and reduce in Python" -
+    this stays cheap regardless of how many transactions fall in the window,
+    which matters because it backs both the AI Ledger Brief and the "Ask
+    LEDGR" tool that answers "how much was posted this week".
+    """
+    # Every transaction that was posted counts, including reversals - a
+    # reversal is a real posting too. Whether the ledger *nets* to zero over
+    # the window is a different question (`balances.trial_balance` answers
+    # that); this answers "how much posting activity happened".
+    filters: list = []
+    if posted_from is not None:
+        filters.append(Transaction.posted_at >= posted_from)
+    if posted_to is not None:
+        filters.append(Transaction.posted_at <= posted_to)
+
+    totals = db.execute(
+        select(
+            Transaction.currency,
+            func.count(Transaction.id),
+            func.coalesce(func.sum(Transaction.total_debits_minor), 0),
+        )
+        .where(*filters)
+        .group_by(Transaction.currency)
+    ).all()
+
+    rows: list[CurrencyActivity] = []
+    for currency, count, total_minor in totals:
+        largest = db.execute(
+            select(Transaction.id, Transaction.reference, Transaction.total_debits_minor)
+            .where(*filters, Transaction.currency == currency)
+            .order_by(Transaction.total_debits_minor.desc())
+            .limit(1)
+        ).first()
+        rows.append(
+            CurrencyActivity(
+                currency=currency,
+                transaction_count=int(count),
+                total_minor=int(total_minor),
+                largest_transaction_id=largest[0] if largest else None,
+                largest_transaction_reference=largest[1] if largest else None,
+                largest_amount_minor=int(largest[2]) if largest else 0,
+            )
+        )
+
+    rows.sort(key=lambda r: r.currency)
+    return LedgerSummary(posted_from=posted_from, posted_to=posted_to, by_currency=rows)
 
 
 def get_transaction(db: Session, transaction_id: uuid.UUID) -> Transaction:

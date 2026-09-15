@@ -200,3 +200,69 @@ export interface TransactionCreate {
   external_reference?: string | null;
   metadata?: Record<string, unknown>;
 }
+
+// --- LEDGR Intelligence ----------------------------------------------------
+//
+// An AI-generated *proposal* is never a transaction: it has no id, no seq,
+// no posted_at, because nothing has been written yet. `post_body` is the
+// exact body the existing `POST /transactions` expects - reviewing and
+// posting a proposal means sending `post_body` there, unmodified except for
+// whatever the operator chose to edit first.
+
+export interface AIStatus {
+  available: boolean;
+  provider: string | null;
+  reason: string | null;
+}
+
+export interface ProposedEntry {
+  account_id: string | null;
+  account_code: string;
+  account_name: string | null;
+  direction: EntryDirection;
+  amount: Money;
+}
+
+export interface TransactionProposal {
+  valid: boolean;
+  issues: string[];
+  description: string;
+  currency: string;
+  entries: ProposedEntry[];
+  total_debits: Money | null;
+  total_credits: Money | null;
+  post_body: TransactionCreate | null;
+}
+
+export interface AskLedgerAnswer {
+  answer: string;
+  tools_used: string[];
+}
+
+export interface ExplainTransaction {
+  transaction_id: string;
+  reference: string;
+  explanation: string;
+}
+
+export interface CurrencyActivity {
+  currency: string;
+  transaction_count: number;
+  total_value: Money;
+  largest_transaction_reference: string | null;
+  largest_amount: Money;
+}
+
+export interface LedgerBriefStats {
+  window_days: number;
+  total_transactions: number;
+  all_transactions_balanced: boolean;
+  by_currency: CurrencyActivity[];
+}
+
+export interface LedgerBrief {
+  generated_at: string;
+  is_ai_generated: boolean;
+  summary: string;
+  stats: LedgerBriefStats;
+}

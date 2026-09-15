@@ -12,6 +12,7 @@ import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
+import { LedgerBriefWidget } from '../components/ai/LedgerBriefWidget';
 import { PageHeader } from '../components/layout/AppShell';
 import { Amount, TransactionStatusBadge } from '../components/ledger/atoms';
 import { Button, Panel, PanelHeader, Skeleton, StatusDot } from '../components/ui/primitives';
@@ -180,6 +181,8 @@ export default function DashboardPage() {
                 </p>
               </div>
             </div>
+
+            <LedgerBriefWidget />
 
             <div className="grid grid-cols-1 gap-6 xl:grid-cols-5">
               <Panel className="xl:col-span-3">

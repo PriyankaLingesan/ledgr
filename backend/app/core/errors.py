@@ -118,3 +118,29 @@ class IdempotentRequestInFlight(Conflict):
     """An identical request is still executing; the retry must wait."""
 
     code = "idempotent_request_in_flight"
+
+
+# --- AI (LEDGR Intelligence) -----------------------------------------------
+#
+# The AI layer never writes to the ledger, so its failures are never
+# financial-integrity failures - just a feature that couldn't run. These are
+# kept separate from the invariant errors above for exactly that reason.
+
+
+class AIUnavailable(LedgrError):
+    """No AI provider is configured, or the provider call itself failed."""
+
+    status_code = 503
+    code = "ai_unavailable"
+
+
+class AIResponseInvalid(LedgrError):
+    """The model's output didn't parse, or the proposal it described is invalid.
+
+    Distinct from `UnbalancedTransaction` et al.: this describes a *proposal*
+    that was never posted and never will be from this response - not a rule
+    the deterministic posting engine enforced.
+    """
+
+    status_code = 422
+    code = "ai_response_invalid"
