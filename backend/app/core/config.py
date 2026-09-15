@@ -79,6 +79,20 @@ class Settings(BaseSettings):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
         return value
 
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def _normalize_driver_scheme(cls, value: object) -> object:
+        """Managed providers (e.g. Render) hand out a bare `postgresql://` URL.
+
+        SQLAlchemy resolves that scheme to psycopg2 by default, which isn't
+        installed here - only psycopg3 is. Rewriting to `postgresql+psycopg://`
+        is a no-op for URLs that already specify a driver (docker-compose and
+        `.env.example` both do), so local and CI behaviour is unchanged.
+        """
+        if isinstance(value, str) and value.startswith("postgresql://"):
+            return "postgresql+psycopg://" + value[len("postgresql://") :]
+        return value
+
     @field_validator("database_url")
     @classmethod
     def _require_postgres(cls, value: str) -> str:

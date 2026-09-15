@@ -1,0 +1,87 @@
+# Render Blueprint for LEDGR.
+#
+# Deploy: on render.com, "New +" -> "Blueprint" -> connect this GitHub repo.
+# Render parses this file and provisions all three resources below in one
+# step. After the first deploy, set the AI_* secrets (optional) in the
+# ledgr-api service's Environment tab - they are deliberately left blank
+# here (`sync: false`) so no key is ever committed to the repo.
+#
+# Architecture:
+#   React static site (ledgr-web) --HTTPS--> FastAPI web service (ledgr-api)
+#                                                    |
+#                                             Render PostgreSQL (ledgr-db)
+#
+# Free-tier notes (change `plan:` below if you want to avoid these):
+#   - ledgr-db (free Postgres) is deleted by Render after 30 days unless
+#     upgraded to a paid plan.
+#   - ledgr-api (free web service) spins down after 15 min idle and takes
+#     10-60s to cold-start on the next request.
+
+databases:
+  - name: ledgr-db
+    databaseName: ledgr
+    user: ledgr
+    plan: free
+
+services:
+  # --- FastAPI backend ------------------------------------------------------
+  - type: web
+    name: ledgr-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /api/v1/system/health
+    # Migrations run before every deploy, reusing the exact command
+    # docker-compose's `migrate` service already runs locally - just without
+    # the demo seed step, so production starts with schema only, no data.
+    dockerCommand: >-
+      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers"
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ledgr-db
+          property: connectionString
+      - key: ENVIRONMENT
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      # Update this if Render assigns ledgr-web a different subdomain (e.g.
+      # because the name was taken) - check the ledgr-web service URL after
+      # first deploy and adjust here if it doesn't match.
+      - key: CORS_ORIGINS
+        value: https://ledgr-web.onrender.com
+      # AI is optional. Leave these unset in the dashboard and every AI
+      # endpoint answers "unavailable" - the ledger works identically either
+      # way. Fill them in (Environment tab, not this file) to enable it.
+      - key: AI_PROVIDER
+        sync: false
+      - key: AI_MODEL
+        sync: false
+      - key: AI_API_KEY
+        sync: false
+      - key: AI_BASE_URL
+        sync: false
+
+  # --- React/Vite frontend (static site) ------------------------------------
+  - type: web
+    name: ledgr-web
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    envVars:
+      # Baked into the compiled bundle at build time (Vite convention - see
+      # frontend/src/lib/api.ts). Update if ledgr-api's actual URL differs.
+      - key: VITE_API_BASE_URL
+        value: https://ledgr-api.onrender.com/api/v1
+    routes:
+      # Client-side routing (React Router): unknown paths resolve to the SPA
+      # shell, not a 404 - same rule frontend/nginx.conf applies locally.
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    headers:
+      - path: /assets/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
