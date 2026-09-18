@@ -43,6 +43,8 @@ class ToolCall:
     id: str
     name: str
     arguments: dict[str, Any]
+    # Gemini 3 requires this signature to be returned on the next tool turn.
+    thought_signature: str | None = None
 
 
 @dataclass(frozen=True)
@@ -292,9 +294,147 @@ class OpenAIProvider:
         return {"role": message.role, "content": message.content or ""}
 
 
+class GeminiProvider:
+    """Google Gemini generateContent API."""
+
+    def __init__(self, *, api_key: str, model: str, base_url: str, timeout: float) -> None:
+        self._api_key = api_key
+        self._model = model
+        self._base_url = base_url or "https://generativelanguage.googleapis.com"
+        self._timeout = timeout
+
+    def complete(
+        self,
+        *,
+        system: str,
+        messages: list[AIMessage],
+        tools: list[ToolSpec] | None = None,
+        max_tokens: int = 1024,
+    ) -> Completion:
+        contents = []
+
+        for message in messages:
+            if message.role == "user":
+                contents.append({
+                    "role": "user",
+                    "parts": [{"text": message.content or ""}],
+                })
+
+            elif message.role == "assistant":
+                parts = []
+
+                if message.content:
+                    parts.append({"text": message.content})
+
+                for call in message.tool_calls:
+                    function_call = {
+                        "name": call.name,
+                        "args": call.arguments,
+                    }
+
+                    part = {"functionCall": function_call}
+
+                    # Gemini 3 requires the thought signature to stay
+                    # attached to the exact functionCall Part.
+                    if call.thought_signature:
+                        part["thoughtSignature"] = call.thought_signature
+
+                    parts.append(part)
+
+                contents.append({
+                    "role": "model",
+                    "parts": parts or [{"text": ""}],
+                })
+
+            elif message.role == "tool":
+                contents.append({
+                    "role": "user",
+                    "parts": [{
+                        "functionResponse": {
+                            "name": message.tool_name,
+                            "id": message.tool_call_id,
+                            "response": {
+                                "result": message.content or "",
+                            },
+                        }
+                    }],
+                })
+
+        body: dict[str, Any] = {
+            "system_instruction": {
+                "parts": [{"text": system}],
+            },
+            "contents": contents,
+            "generationConfig": {
+                "maxOutputTokens": max_tokens,
+            },
+        }
+
+        if tools:
+            body["tools"] = [{
+                "functionDeclarations": [
+                    {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters,
+                    }
+                    for t in tools
+                ]
+            }]
+
+        try:
+            response = httpx.post(
+                f"{self._base_url}/v1beta/models/{self._model}:generateContent",
+                headers={
+                    "x-goog-api-key": self._api_key,
+                    "content-type": "application/json",
+                },
+                json=body,
+                timeout=self._timeout,
+            )
+
+            print("\n===== GEMINI DEBUG =====")
+            print("STATUS:", response.status_code)
+            print("BODY:", response.text)
+            print("========================\n")
+
+            response.raise_for_status()
+
+        except httpx.HTTPError as exc:
+            _raise_for_transport(exc, "gemini")
+
+        payload = response.json()
+        parts = payload["candidates"][0]["content"]["parts"]
+
+        text_parts: list[str] = []
+        tool_calls: list[ToolCall] = []
+
+        for part in parts:
+            if "text" in part:
+                text_parts.append(part["text"])
+
+            elif "functionCall" in part:
+                call = part["functionCall"]
+
+                tool_calls.append(
+                    ToolCall(
+                        id=call.get("id", call["name"]),
+                        name=call["name"],
+                        arguments=call.get("args", {}),
+                        thought_signature=part.get("thoughtSignature"),
+                    )
+                )
+
+        return Completion(
+            text="".join(text_parts) or None,
+            tool_calls=tool_calls,
+        )
+
+
 _PROVIDERS: dict[str, type] = {
     "anthropic": AnthropicProvider,
     "openai": OpenAIProvider,
+    "gemini": GeminiProvider,
 }
 
 
