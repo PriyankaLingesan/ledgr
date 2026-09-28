@@ -19,9 +19,11 @@ from sqlalchemy import func, select, text
 from app.core.money import to_minor
 from app.db.session import session_scope
 from app.models.account import Account
+from app.models.auth import ApiKey
 from app.models.enums import AccountType, EntryDirection
 from app.models.transaction import Transaction
 from app.services import accounts as account_service
+from app.services import auth as auth_service
 from app.services import posting
 
 RANDOM_SEED = 20260908
@@ -66,7 +68,31 @@ def _entry(account_id, direction: EntryDirection, amount_minor: int, memo: str |
     )
 
 
+def ensure_demo_api_key() -> None:
+    """Mint a demo API key for local/Docker use if none exists yet.
+
+    Authentication is real (see `app.services.auth`): the plaintext key is
+    never stored, only its hash, so it can only ever be *shown* at creation
+    time - which is exactly what running this at container startup is for.
+    Idempotent (checked every invocation, independent of `--if-empty`'s
+    ledger-only check) so re-running the seed script never mints a second
+    key or breaks a console already configured with the first one.
+    """
+    with session_scope() as db:
+        if db.execute(select(func.count(ApiKey.id))).scalar_one():
+            return
+        _, raw_key = auth_service.create_api_key(db, label="console-demo")
+
+    banner = "=" * 72
+    print(banner, flush=True)
+    print("LEDGR demo API key (shown once - writes require this from now on):", flush=True)
+    print(f"  {raw_key}", flush=True)
+    print("Paste it into the console's login screen at /login.", flush=True)
+    print(banner, flush=True)
+
+
 def seed(reset: bool = False, if_empty: bool = False) -> None:
+    ensure_demo_api_key()
     rng = random.Random(RANDOM_SEED)
 
     with session_scope() as db:

@@ -74,10 +74,18 @@ def post(db, cash, revenue, amount, **kwargs):
 
 # --------------------------------------------------------------------------
 # provider unavailable / not configured - the whole app must still work
+#
+# Explicitly monkeypatched to `None` rather than relying on ambient
+# AI_PROVIDER/AI_API_KEY being unset: these tests exist specifically to prove
+# the "unconfigured" code path, and a developer's local .env is allowed to
+# carry a real key (e.g. to try LEDGR Intelligence live) without breaking
+# them - the same reasoning the FakeProvider/BrokenProvider tests below
+# already follow for their own scenarios.
 # --------------------------------------------------------------------------
 
 
-def test_status_reports_unavailable_without_a_key(client):
+def test_status_reports_unavailable_without_a_key(client, monkeypatch):
+    monkeypatch.setattr("app.services.ai.provider.get_provider", lambda: None)
     response = client.get("/api/v1/ai/status")
     assert response.status_code == 200
     body = response.json()
@@ -86,19 +94,22 @@ def test_status_reports_unavailable_without_a_key(client):
     assert body["reason"]
 
 
-def test_propose_returns_503_when_ai_unavailable(client):
+def test_propose_returns_503_when_ai_unavailable(client, monkeypatch):
+    monkeypatch.setattr("app.services.ai.provider.get_provider", lambda: None)
     response = client.post("/api/v1/ai/transactions/propose", json={"description": "x"})
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "ai_unavailable"
 
 
-def test_ask_returns_503_when_ai_unavailable(client):
+def test_ask_returns_503_when_ai_unavailable(client, monkeypatch):
+    monkeypatch.setattr("app.services.ai.provider.get_provider", lambda: None)
     response = client.post("/api/v1/ai/ask", json={"question": "x"})
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "ai_unavailable"
 
 
-def test_explain_returns_503_when_ai_unavailable(client, db, cash_and_revenue):
+def test_explain_returns_503_when_ai_unavailable(client, db, cash_and_revenue, monkeypatch):
+    monkeypatch.setattr("app.services.ai.provider.get_provider", lambda: None)
     cash, revenue = cash_and_revenue
     txn = post(db, cash, revenue, 100_00)
     response = client.get(f"/api/v1/ai/transactions/{txn.id}/explain")
@@ -106,8 +117,9 @@ def test_explain_returns_503_when_ai_unavailable(client, db, cash_and_revenue):
     assert response.json()["error"]["code"] == "ai_unavailable"
 
 
-def test_ledger_brief_still_works_when_ai_unavailable(client, db, cash_and_revenue):
+def test_ledger_brief_still_works_when_ai_unavailable(client, db, cash_and_revenue, monkeypatch):
     """The one AI endpoint that must never 503: it has a real, non-AI fallback."""
+    monkeypatch.setattr("app.services.ai.provider.get_provider", lambda: None)
     cash, revenue = cash_and_revenue
     post(db, cash, revenue, 500_00)
 
@@ -119,8 +131,9 @@ def test_ledger_brief_still_works_when_ai_unavailable(client, db, cash_and_reven
     assert "500.00" in body["summary"]
 
 
-def test_core_ledger_endpoints_unaffected_by_missing_ai_config(client):
+def test_core_ledger_endpoints_unaffected_by_missing_ai_config(client, monkeypatch):
     """The core product must not notice or care whether AI is configured."""
+    monkeypatch.setattr("app.services.ai.provider.get_provider", lambda: None)
     assert client.get("/api/v1/system/health").status_code == 200
     assert client.get("/api/v1/accounts").status_code == 200
     assert client.get("/api/v1/transactions").status_code == 200

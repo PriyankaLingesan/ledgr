@@ -14,13 +14,20 @@ from fastapi.responses import JSONResponse
 from app.api.deps import Actor, DbSession, IdempotencyKey, PaginationParams, RequestId
 from app.models.enums import TransactionKind, TransactionStatus
 from app.schemas.common import Page
-from app.schemas.serialize import transaction_out
+from app.schemas.investigation import (
+    CorrectionSimulationOut,
+    SimulateCorrectionRequest,
+    TransactionCorrectionOut,
+    TransactionCorrectionRequest,
+    TransactionLineageOut,
+)
+from app.schemas.serialize import correction_simulation_out, transaction_lineage_out, transaction_out
 from app.schemas.transaction import (
     TransactionCreate,
     TransactionOut,
     TransactionReverse,
 )
-from app.services import idempotency, posting, queries
+from app.services import idempotency, investigation, posting, queries
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
 
@@ -212,3 +219,137 @@ def reverse_transaction(
             transaction_id=reversal.id,
         )
     return out
+
+
+@router.post(
+    "/{transaction_id}/correct",
+    response_model=TransactionCorrectionOut,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        404: {"description": "Transaction not found"},
+        409: {"description": "Already reversed, or an identical request is still running"},
+        422: {"description": "Reversals cannot be corrected, or the new entries are unbalanced"},
+    },
+)
+def correct_transaction(
+    transaction_id: uuid.UUID,
+    payload: TransactionCorrectionRequest,
+    db: DbSession,
+    actor: Actor,
+    request_id: RequestId,
+    key: IdempotencyKey,
+):
+    """Guided correction: reverse the original, then post the fixed version.
+
+    Not a new posting mechanism - this is `POST .../reverse` immediately
+    followed by `POST /transactions`, both already fully validated, committed
+    together as one atomic write (see `investigation.correct_transaction`).
+    The original transaction is never edited; it is left exactly as posted,
+    marked REVERSED, with its reversal and the new corrected transaction both
+    linked back to it via metadata.
+
+    Send an `Idempotency-Key` header, exactly as `POST /transactions` and
+    `POST .../reverse` already require: a retried correction request (a
+    double-click, a network retry) then replays the original result instead
+    of reversing an already-corrected transaction a second time.
+    """
+    body = payload.model_dump(mode="json") | {"transaction_id": str(transaction_id)}
+
+    if key:
+        replay = idempotency.claim(
+            scope=idempotency.SCOPE_CORRECT_TRANSACTION,
+            key=key,
+            request_hash=idempotency.fingerprint(body),
+            request_id=request_id,
+        )
+        if replay is not None:
+            return _replay(replay)
+
+    try:
+        correction = investigation.correct_transaction(
+            db,
+            transaction_id,
+            entries=[
+                posting.EntryCommand(
+                    account_id=e.account_id,
+                    direction=e.direction,
+                    amount_minor=e.amount_minor,
+                    memo=e.memo,
+                )
+                for e in payload.entries
+            ],
+            reason=payload.reason,
+            description=payload.description,
+            reference=payload.reference,
+            actor=actor,
+            request_id=request_id,
+        )
+    except Exception:
+        if key:
+            # The write failed atomically - the original is untouched, still
+            # POSTED - so the key never produced a financial record: let the
+            # caller retry with it.
+            idempotency.release(scope=idempotency.SCOPE_CORRECT_TRANSACTION, key=key)
+        raise
+
+    out = TransactionCorrectionOut(
+        original_id=correction.original.id,
+        original_reference=correction.original.reference,
+        reversal_id=correction.reversal.id,
+        reversal_reference=correction.reversal.reference,
+        corrected_id=correction.corrected.id,
+        corrected_reference=correction.corrected.reference,
+    )
+    if key:
+        idempotency.complete(
+            scope=idempotency.SCOPE_CORRECT_TRANSACTION,
+            key=key,
+            status_code=status.HTTP_201_CREATED,
+            body=out.model_dump(mode="json"),
+            transaction_id=correction.corrected.id,
+        )
+    return out
+
+
+@router.get("/{transaction_id}/lineage", response_model=TransactionLineageOut)
+def get_transaction_lineage(transaction_id: uuid.UUID, db: DbSession) -> TransactionLineageOut:
+    """Where this financial event came from, what it touched, and what
+    happened to it afterward - assembled from real foreign-key and metadata
+    relationships already on the schema, never inferred.
+    """
+    return transaction_lineage_out(investigation.transaction_lineage(db, transaction_id))
+
+
+@router.post(
+    "/{transaction_id}/simulate-correction",
+    response_model=CorrectionSimulationOut,
+    responses={
+        404: {"description": "Transaction not found, or a proposed entry names an unknown account"},
+        409: {"description": "Already reversed"},
+        422: {"description": "Reversals cannot be corrected, or the new entries are unbalanced"},
+    },
+)
+def simulate_transaction_correction(
+    transaction_id: uuid.UUID,
+    payload: SimulateCorrectionRequest,
+    db: DbSession,
+) -> CorrectionSimulationOut:
+    """What CORRECT would produce - current vs. simulated account balances -
+    without writing anything. This handler issues no commit, so discarding
+    the result leaves the ledger exactly as it was; only `POST .../correct`
+    ever changes it.
+    """
+    simulation = investigation.simulate_correction(
+        db,
+        transaction_id,
+        entries=[
+            posting.EntryCommand(
+                account_id=e.account_id,
+                direction=e.direction,
+                amount_minor=e.amount_minor,
+                memo=e.memo,
+            )
+            for e in payload.entries
+        ],
+    )
+    return correction_simulation_out(simulation)

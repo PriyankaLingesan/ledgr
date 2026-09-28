@@ -7,7 +7,7 @@
  * this page.
  */
 
-import { ArrowUpRight, ShieldCheck } from 'lucide-react';
+import { ArrowUpRight, PenLine, SearchCheck, ShieldAlert, ShieldCheck } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
@@ -15,11 +15,18 @@ import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxi
 import { LedgerBriefWidget } from '../components/ai/LedgerBriefWidget';
 import { PageHeader } from '../components/layout/AppShell';
 import { Amount, TransactionStatusBadge } from '../components/ledger/atoms';
-import { Button, Panel, PanelHeader, Skeleton, StatusDot } from '../components/ui/primitives';
+import { Badge, Button, Panel, PanelHeader, Skeleton, StatusDot } from '../components/ui/primitives';
 import { EmptyState, ErrorState, Table, TableScroller, THead } from '../components/ui/Table';
 import { cn } from '../lib/cn';
 import { formatDate, formatInteger, formatMinor } from '../lib/format';
-import { useCurrencies, useIntegrity, useStats, useTransactions } from '../lib/queries';
+import {
+  useControlExceptions,
+  useCurrencies,
+  useIntegrity,
+  useInvestigations,
+  useStats,
+  useTransactions,
+} from '../lib/queries';
 
 function StatTile({
   label,
@@ -116,6 +123,202 @@ function VolumeChart({ currency }: { currency: string }) {
   );
 }
 
+function ControlCenterTile({
+  label,
+  value,
+  loading,
+  tone,
+  to,
+}: {
+  label: string;
+  value: string;
+  loading?: boolean;
+  tone?: 'neutral' | 'warning' | 'positive';
+  to: string;
+}) {
+  const valueTone =
+    tone === 'warning' ? 'text-warning' : tone === 'positive' ? 'text-positive' : 'text-ink';
+  return (
+    <Link to={to} className="hover-lift block px-5 py-4 transition-colors hover:bg-surface-2">
+      <p className="caption">{label}</p>
+      {loading ? (
+        <Skeleton className="mt-2 h-7 w-14" />
+      ) : (
+        <p className={cn('num mt-1 text-2xl font-semibold', valueTone)}>{value}</p>
+      )}
+    </Link>
+  );
+}
+
+/**
+ * The Financial Control Center's opening question: does anything here
+ * require investigation right now? Every count is read live from the same
+ * endpoints the Flight Recorder and Investigations pages use - nothing is
+ * pre-computed or cached separately, so this can never drift from what an
+ * operator finds by clicking through.
+ */
+function ControlCenter() {
+  const stats = useStats(14);
+  const exceptions = useControlExceptions();
+  const openCases = useInvestigations({ status: 'OPEN', limit: 5 });
+  const recentCases = useInvestigations({ limit: 5 });
+  const recentTransactions = useTransactions({ limit: 50 });
+
+  const balanced = stats.data?.ledger_balanced;
+  const duplicateCount = exceptions.data?.filter((e) => e.kind === 'POTENTIAL_DUPLICATE').length ?? 0;
+  const exceptionCount = exceptions.data?.length ?? 0;
+  const openCaseCount = openCases.data?.total ?? 0;
+  const recentCorrections = (recentTransactions.data?.items ?? []).filter(
+    (t) => typeof t.metadata.corrects === 'string',
+  );
+
+  const nothingToSee =
+    stats.data && exceptions.data && balanced && exceptionCount === 0 && openCaseCount === 0;
+
+  return (
+    <Panel>
+      <PanelHeader
+        title="Financial Control Center"
+        description="Does anything here require investigation right now?"
+        actions={
+          <Link
+            to="/app/investigations"
+            className="inline-flex items-center gap-1 text-[0.8125rem] text-accent-ink hover:underline"
+          >
+            All investigations <ArrowUpRight className="h-3.5 w-3.5" />
+          </Link>
+        }
+      />
+
+      <div className="grid grid-cols-2 divide-x divide-y divide-border border-b border-border sm:grid-cols-4 sm:divide-y-0">
+        <ControlCenterTile
+          label="Ledger status"
+          value={balanced === undefined ? '—' : balanced ? 'Balanced' : 'Unbalanced'}
+          loading={stats.isLoading}
+          tone={balanced === undefined ? 'neutral' : balanced ? 'positive' : 'warning'}
+          to="/app/flight-recorder"
+        />
+        <ControlCenterTile
+          label="Open investigations"
+          value={formatInteger(openCaseCount)}
+          loading={openCases.isLoading}
+          tone={openCaseCount > 0 ? 'warning' : 'positive'}
+          to="/app/investigations?status=OPEN"
+        />
+        <ControlCenterTile
+          label="Control exceptions"
+          value={formatInteger(exceptionCount)}
+          loading={exceptions.isLoading}
+          tone={exceptionCount > 0 ? 'warning' : 'positive'}
+          to="/app/flight-recorder"
+        />
+        <ControlCenterTile
+          label="Potential duplicates"
+          value={formatInteger(duplicateCount)}
+          loading={exceptions.isLoading}
+          tone={duplicateCount > 0 ? 'warning' : 'positive'}
+          to="/app/flight-recorder"
+        />
+      </div>
+
+      {nothingToSee ? (
+        <EmptyState
+          icon={<ShieldCheck className="h-4 w-4" strokeWidth={1.6} />}
+          title="Nothing needs attention"
+          description="The ledger is balanced, no control exceptions are open, and there are no open investigations."
+        />
+      ) : (
+        <div className="grid grid-cols-1 divide-y divide-border lg:grid-cols-2 lg:divide-x lg:divide-y-0">
+          <div>
+            <div className="flex items-center justify-between px-4 py-2.5">
+              <p className="text-[0.8125rem] font-medium text-ink">Attention required</p>
+              {exceptionCount > 0 && <Badge tone="warning">{exceptionCount}</Badge>}
+            </div>
+            {exceptions.isLoading ? (
+              <div className="space-y-2 p-4">
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-10 w-full" />
+              </div>
+            ) : !exceptions.data || exceptions.data.length === 0 ? (
+              <p className="flex items-center gap-2 px-4 py-4 text-[0.8125rem] text-ink-3">
+                <ShieldAlert className="h-3.5 w-3.5" strokeWidth={1.7} />
+                No control exceptions open.
+              </p>
+            ) : (
+              <ul className="divide-y divide-border">
+                {exceptions.data.slice(0, 5).map((exception) => (
+                  <li key={exception.id} className="px-4 py-2.5">
+                    <div className="flex items-center gap-2">
+                      <Badge tone={exception.kind === 'POTENTIAL_DUPLICATE' ? 'warning' : 'negative'}>
+                        {exception.kind === 'POTENTIAL_DUPLICATE' ? 'Duplicate' : 'Integrity'}
+                      </Badge>
+                      <span className="truncate text-[0.8125rem] text-ink-2">{exception.title}</span>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between px-4 py-2.5">
+              <p className="text-[0.8125rem] font-medium text-ink">Recent investigations</p>
+              {recentCorrections.length > 0 && (
+                <span className="flex items-center gap-1 text-2xs text-ink-3">
+                  <PenLine className="h-3 w-3" strokeWidth={1.8} />
+                  {recentCorrections.length} recent correction{recentCorrections.length === 1 ? '' : 's'}
+                </span>
+              )}
+            </div>
+            {recentCases.isLoading ? (
+              <div className="space-y-2 p-4">
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-10 w-full" />
+              </div>
+            ) : !recentCases.data || recentCases.data.items.length === 0 ? (
+              <p className="flex items-center gap-2 px-4 py-4 text-[0.8125rem] text-ink-3">
+                <SearchCheck className="h-3.5 w-3.5" strokeWidth={1.7} />
+                No investigations opened yet.
+              </p>
+            ) : (
+              <ul className="divide-y divide-border">
+                {recentCases.data.items.map((investigationCase) => (
+                  <li key={investigationCase.id}>
+                    <Link
+                      to={`/app/investigations/${investigationCase.id}`}
+                      className="row-link flex items-center justify-between gap-3 px-4 py-2.5"
+                    >
+                      <div className="min-w-0">
+                        <span className="num text-[0.8125rem] font-medium text-ink">
+                          {investigationCase.case_number}
+                        </span>
+                        <span className="ml-2 truncate text-[0.8125rem] text-ink-3">
+                          {investigationCase.title}
+                        </span>
+                      </div>
+                      <Badge
+                        tone={
+                          investigationCase.status === 'OPEN'
+                            ? 'warning'
+                            : investigationCase.status === 'INVESTIGATING'
+                              ? 'accent'
+                              : 'positive'
+                        }
+                      >
+                        {investigationCase.status}
+                      </Badge>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
 export default function DashboardPage() {
   const navigate = useNavigate();
   const stats = useStats(14);
@@ -140,6 +343,8 @@ export default function DashboardPage() {
       />
 
       <div className="space-y-6 px-5 py-6 sm:px-8">
+        <ControlCenter />
+
         {stats.isError ? (
           <Panel>
             <ErrorState error={stats.error} onRetry={() => stats.refetch()} context="the dashboard" />

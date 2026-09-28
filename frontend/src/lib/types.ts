@@ -266,3 +266,271 @@ export interface LedgerBrief {
   summary: string;
   stats: LedgerBriefStats;
 }
+
+// --- Financial Flight Recorder ---------------------------------------------
+//
+// Every figure here is derived from ledger entries at read time - the same
+// principle as the rest of the API. `BalanceChange` is the one shape behind
+// "Explain This Balance", the timeline, state comparison, and "why did my
+// balance change": they are the same query with different `from`/`to`.
+
+export interface AccountBalanceAt {
+  account_id: string;
+  account_code: string;
+  account_name: string;
+  currency: string;
+  normal_balance: NormalBalance;
+  as_of: string;
+  balance: Money;
+  debits: Money;
+  credits: Money;
+  entry_count: number;
+}
+
+export interface InvestigationEvent {
+  entry_id: string;
+  seq: number;
+  transaction_id: string;
+  reference: string;
+  description: string;
+  direction: EntryDirection;
+  amount: Money;
+  /** Signed, in the account's own normal orientation. */
+  effect: Money;
+  running_balance: Money;
+  created_at: string;
+  transaction_status: TransactionStatus;
+  transaction_kind: TransactionKind;
+  reverses_transaction_id: string | null;
+  reversed_by_transaction_id: string | null;
+}
+
+export interface BalanceChange {
+  account_id: string;
+  account_code: string;
+  account_name: string;
+  currency: string;
+  normal_balance: NormalBalance;
+  from: string;
+  to: string;
+  opening_balance: Money;
+  closing_balance: Money;
+  net_change: Money;
+  event_count: number;
+  events: InvestigationEvent[];
+  /** True unless the two independent computations of this window disagree. */
+  reconciled: boolean;
+}
+
+export interface DuplicateEntry {
+  transaction_id: string;
+  reference: string;
+  description: string;
+  account_code: string;
+  direction: EntryDirection;
+  amount: Money;
+  created_at: string;
+}
+
+export interface DuplicateGroup {
+  label: string;
+  reasons: string[];
+  entries: DuplicateEntry[];
+}
+
+export interface IntegrityCheck {
+  name: string;
+  passed: boolean;
+  detail: string;
+}
+
+export interface IntegrityChecklist {
+  checked_at: string;
+  all_passed: boolean;
+  checks: IntegrityCheck[];
+}
+
+export interface TransactionCorrectionRequest {
+  entries: EntryInput[];
+  reason: string;
+  description?: string | null;
+  reference?: string | null;
+}
+
+export interface TransactionCorrectionResult {
+  original_id: string;
+  original_reference: string;
+  reversal_id: string;
+  reversal_reference: string;
+  corrected_id: string;
+  corrected_reference: string;
+}
+
+// --- transaction lineage -----------------------------------------------
+//
+// Every edge here is a real relationship already on the schema (the
+// `reverses_transaction_id` foreign key) or the correction metadata
+// `correct_transaction` already writes - never inferred or guessed.
+
+export interface TransactionNode {
+  id: string;
+  reference: string;
+  description: string;
+  status: TransactionStatus;
+  kind: TransactionKind;
+  currency: string;
+  total_debits: Money;
+  total_credits: Money;
+  posted_at: string;
+}
+
+export interface TransactionLineage {
+  root: TransactionNode;
+  accounts: AccountSummary[];
+  reverses: TransactionNode | null;
+  reversed_by: TransactionNode | null;
+  corrects: TransactionNode | null;
+  corrected_by: TransactionNode | null;
+}
+
+// --- what-if correction simulator ---------------------------------------
+//
+// Read-only: simulating never writes to the ledger. Discarding the result
+// is a no-op; only POST .../correct changes anything.
+
+export interface SimulatedAccountImpact {
+  account_id: string;
+  account_code: string;
+  account_name: string;
+  currency: string;
+  current_balance: Money;
+  simulated_balance: Money;
+  delta: Money;
+}
+
+export interface CorrectionSimulation {
+  original_id: string;
+  original_reference: string;
+  impacts: SimulatedAccountImpact[];
+}
+
+// --- control exception engine --------------------------------------------
+//
+// Every exception is a real, already-detected signal - never a verdict, and
+// never labelled fraud.
+
+export type ControlExceptionKind = 'POTENTIAL_DUPLICATE' | 'INTEGRITY';
+
+export interface ControlException {
+  id: string;
+  kind: ControlExceptionKind;
+  title: string;
+  detail: string;
+  account_id: string | null;
+  transaction_ids: string[];
+  detected_at: string;
+}
+
+// --- investigation cases --------------------------------------------------
+//
+// The operational record of "someone is looking into this". Carries no
+// money of its own - every figure in a case's evidence bundle is derived
+// live from the ledger by the same functions the Flight Recorder uses.
+
+export type InvestigationStatus = 'OPEN' | 'INVESTIGATING' | 'RESOLVED';
+export type InvestigationSource = 'MANUAL' | 'DUPLICATE' | 'INTEGRITY' | 'FLIGHT_RECORDER';
+
+export interface InvestigationCase {
+  id: string;
+  case_number: string;
+  title: string;
+  issue_summary: string;
+  status: InvestigationStatus;
+  source: InvestigationSource;
+  source_reference: string | null;
+  account: AccountSummary | null;
+  window_from: string | null;
+  window_to: string | null;
+  resolved_at: string | null;
+  resolution_note: string | null;
+  correction_transaction_id: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface InvestigationCaseCreate {
+  title: string;
+  issue_summary: string;
+  source?: InvestigationSource;
+  source_reference?: string | null;
+  account_id?: string | null;
+  window_from?: string | null;
+  window_to?: string | null;
+}
+
+export interface InvestigationCaseEvidence {
+  case: InvestigationCase;
+  balance_change: BalanceChange | null;
+  duplicate_candidates: DuplicateGroup[];
+  integrity: IntegrityCheck[];
+  lineage: TransactionLineage | null;
+}
+
+// --- external reconciliation ----------------------------------------------
+//
+// Deterministic comparison of external evidence against the internal
+// ledger. Read-only with respect to the ledger: nothing here posts,
+// reverses, or corrects - only the existing transaction endpoints do that.
+
+export type ReconciliationStatus =
+  | 'MATCHED'
+  | 'AMOUNT_MISMATCH'
+  | 'MISSING_INTERNAL'
+  | 'MISSING_EXTERNAL'
+  | 'AMBIGUOUS_INTERNAL_MATCH';
+
+export interface ExternalTransaction {
+  id: string;
+  source_system: string;
+  external_id: string;
+  account_reference: string | null;
+  amount: Money;
+  direction: EntryDirection;
+  status: string;
+  transaction_timestamp: string;
+  description: string;
+}
+
+export interface ReconciliationResult {
+  id: string;
+  status: ReconciliationStatus;
+  explanation: string;
+  difference: Money | null;
+  /** null only for MISSING_EXTERNAL: a live internal transaction with no external record. */
+  external_transaction: ExternalTransaction | null;
+  internal_transaction_id: string | null;
+  internal_reference: string | null;
+  internal_amount: Money | null;
+}
+
+export interface ReconciliationRunSummary {
+  id: string;
+  run_number: number;
+  created_at: string;
+  external_count: number;
+  matched_count: number;
+  mismatch_count: number;
+  missing_internal_count: number;
+  missing_external_count: number;
+  ambiguous_count: number;
+}
+
+export interface ReconciliationRun extends ReconciliationRunSummary {
+  results: ReconciliationResult[];
+}
+
+export interface ImportResult {
+  imported: number;
+  skipped_duplicates: number;
+}

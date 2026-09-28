@@ -7,7 +7,9 @@ from fastapi import Depends, Header, Query, Request
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.errors import AuthenticationRequired
 from app.db.session import get_db
+from app.services import auth as auth_service
 
 DbSession = Annotated[Session, Depends(get_db)]
 
@@ -37,16 +39,26 @@ RequestId = Annotated[str, Depends(request_id)]
 
 
 def actor(
-    x_actor: Annotated[str | None, Header(alias="X-Actor")] = None,
+    db: DbSession,
+    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
 ) -> str:
-    """Who is performing the write.
+    """Who is performing the write - server-verified, never a trusted header.
 
-    LEDGR is an internal service and deliberately has no auth of its own: it
-    would sit behind an authenticating gateway that populates this header. The
-    value is recorded on every transaction and audit event so history is
-    attributable even without a user table here.
+    Requires `Authorization: Bearer <api-key>`. The key is hashed and looked
+    up against `api_keys`; the resolved label is what gets recorded as
+    `actor` on every transaction and audit event this request produces. A
+    caller cannot claim to be a different actor by sending a different
+    header value - unlike the `X-Actor` header this replaces, which any
+    client could set to anything.
     """
-    return (x_actor or "system").strip()[:120] or "system"
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise AuthenticationRequired(
+            "this endpoint requires an 'Authorization: Bearer <api-key>' header"
+        )
+    raw_key = authorization[len("bearer "):].strip()
+    if not raw_key:
+        raise AuthenticationRequired("the bearer token was empty")
+    return auth_service.authenticate(db, raw_key).label
 
 
 Actor = Annotated[str, Depends(actor)]

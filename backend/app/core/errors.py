@@ -100,6 +100,23 @@ class NotReversible(LedgrError):
     code = "not_reversible"
 
 
+# --- authentication ---------------------------------------------------------
+
+
+class AuthenticationRequired(LedgrError):
+    """No credential was supplied, or it was malformed."""
+
+    status_code = 401
+    code = "authentication_required"
+
+
+class InvalidCredentials(LedgrError):
+    """The credential was well-formed but does not identify a live key."""
+
+    status_code = 401
+    code = "invalid_credentials"
+
+
 # --- idempotency ----------------------------------------------------------
 
 

@@ -315,10 +315,12 @@ class GeminiProvider:
 
         for message in messages:
             if message.role == "user":
-                contents.append({
-                    "role": "user",
-                    "parts": [{"text": message.content or ""}],
-                })
+                contents.append(
+                    {
+                        "role": "user",
+                        "parts": [{"text": message.content or ""}],
+                    }
+                )
 
             elif message.role == "assistant":
                 parts = []
@@ -341,24 +343,30 @@ class GeminiProvider:
 
                     parts.append(part)
 
-                contents.append({
-                    "role": "model",
-                    "parts": parts or [{"text": ""}],
-                })
+                contents.append(
+                    {
+                        "role": "model",
+                        "parts": parts or [{"text": ""}],
+                    }
+                )
 
             elif message.role == "tool":
-                contents.append({
-                    "role": "user",
-                    "parts": [{
-                        "functionResponse": {
-                            "name": message.tool_name,
-                            "id": message.tool_call_id,
-                            "response": {
-                                "result": message.content or "",
-                            },
-                        }
-                    }],
-                })
+                contents.append(
+                    {
+                        "role": "user",
+                        "parts": [
+                            {
+                                "functionResponse": {
+                                    "name": message.tool_name,
+                                    "id": message.tool_call_id,
+                                    "response": {
+                                        "result": message.content or "",
+                                    },
+                                }
+                            }
+                        ],
+                    }
+                )
 
         body: dict[str, Any] = {
             "system_instruction": {
@@ -371,16 +379,18 @@ class GeminiProvider:
         }
 
         if tools:
-            body["tools"] = [{
-                "functionDeclarations": [
-                    {
-                        "name": t.name,
-                        "description": t.description,
-                        "parameters": t.parameters,
-                    }
-                    for t in tools
-                ]
-            }]
+            body["tools"] = [
+                {
+                    "functionDeclarations": [
+                        {
+                            "name": t.name,
+                            "description": t.description,
+                            "parameters": t.parameters,
+                        }
+                        for t in tools
+                    ]
+                }
+            ]
 
         try:
             response = httpx.post(

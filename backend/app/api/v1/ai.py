@@ -26,16 +26,23 @@ from app.schemas.ai import (
 from app.services.ai import ask as ask_service
 from app.services.ai import brief as brief_service
 from app.services.ai import explain as explain_service
+from app.services.ai import provider as ai_provider
 from app.services.ai import transaction_assistant
-from app.services.ai.provider import get_provider
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
 
 @router.get("/status", response_model=AIStatusOut)
 def ai_status() -> AIStatusOut:
-    """Whether the frontend should offer AI features at all right now."""
-    if get_provider() is not None:
+    """Whether the frontend should offer AI features at all right now.
+
+    Calls `ai_provider.get_provider()` via the module, not a direct
+    `from ... import get_provider` - the same reasoning every other AI
+    service module already follows: `unittest.mock`/`monkeypatch` patch the
+    name in the module it lives in, and a direct import binds a local copy
+    that a patch there would never reach.
+    """
+    if ai_provider.get_provider() is not None:
         return AIStatusOut(available=True, provider=settings.ai_provider)
     return AIStatusOut(
         available=False,

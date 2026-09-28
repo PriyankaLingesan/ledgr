@@ -39,6 +39,7 @@ from app.models.idempotency import IdempotencyRecord
 
 SCOPE_POST_TRANSACTION = "transactions.post"
 SCOPE_REVERSE_TRANSACTION = "transactions.reverse"
+SCOPE_CORRECT_TRANSACTION = "transactions.correct"
 
 
 def fingerprint(payload: Any) -> str:

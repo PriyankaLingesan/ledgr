@@ -45,13 +45,15 @@ export function buildQuery(params: Record<string, QueryValue>): string {
 }
 
 const ACTOR_STORAGE_KEY = 'ledgr.actor';
+const API_KEY_STORAGE_KEY = 'ledgr.apiKey';
 
 /**
- * The name recorded as `actor` on every transaction and audit event this
- * browser creates. LEDGR has no authentication of its own - this is not a
- * login - but it is real: the backend genuinely stores whatever is set here
- * on the resulting records, so it is worth letting the operator set it
- * rather than silently stamping everything "console".
+ * A cosmetic display label only - as of the authentication hardening pass,
+ * the backend no longer trusts (or even reads) this for the `actor` it
+ * records. That identity now comes from the API key below, verified
+ * server-side. This is kept only so the console can show "signed in as X"
+ * without a second round trip; renaming it here changes nothing about who
+ * a write is attributed to.
  */
 export function getActor(): string {
   try {
@@ -67,7 +69,33 @@ export function setActor(name: string): void {
     if (trimmed) localStorage.setItem(ACTOR_STORAGE_KEY, trimmed);
     else localStorage.removeItem(ACTOR_STORAGE_KEY);
   } catch {
-    /* storage may be unavailable; the request still proceeds with the default actor */
+    /* storage may be unavailable; display falls back to the default label */
+  }
+}
+
+/**
+ * The real credential. Sent as `Authorization: Bearer <key>` on every
+ * request; the backend hashes it and looks it up against `api_keys` (see
+ * `app.services.auth`), and the matching key's label - not anything set
+ * above - becomes the `actor` recorded on whatever this request writes.
+ * Reads work without one; every write endpoint rejects a request that
+ * doesn't carry a valid key with 401.
+ */
+export function getApiKey(): string | null {
+  try {
+    return localStorage.getItem(API_KEY_STORAGE_KEY)?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+export function setApiKey(key: string): void {
+  try {
+    const trimmed = key.trim();
+    if (trimmed) localStorage.setItem(API_KEY_STORAGE_KEY, trimmed);
+    else localStorage.removeItem(API_KEY_STORAGE_KEY);
+  } catch {
+    /* storage may be unavailable; requests proceed unauthenticated and writes will 401 */
   }
 }
 
@@ -89,8 +117,9 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
       headers: {
         Accept: 'application/json',
         ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-        // Identifies the operator on every write; recorded in the audit trail.
-        'X-Actor': getActor(),
+        // Server-verified identity for writes - see `getApiKey`. Reads don't
+        // need one; a write sent without a valid key gets a 401 back.
+        ...(getApiKey() ? { Authorization: `Bearer ${getApiKey()}` } : {}),
         ...headers,
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,

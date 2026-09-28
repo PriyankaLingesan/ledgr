@@ -49,10 +49,16 @@ from app.db.session import SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models.enums import AccountType  # noqa: E402
 from app.services import accounts as account_service  # noqa: E402
+from app.services import auth as auth_service  # noqa: E402
 
 TABLES = (
     "audit_events",
     "idempotency_keys",
+    "investigations",
+    "reconciliation_results",
+    "reconciliation_runs",
+    "external_transactions",
+    "api_keys",
     "ledger_entries",
     "transactions",
     "account_balances",
@@ -103,8 +109,29 @@ def db():
 
 
 @pytest.fixture
-def client():
+def api_key():
+    """Mints a real, DB-backed API key so HTTP-level tests authenticate the
+    same way a real caller would - not a bypass, the actual auth path.
+    """
+    session = SessionLocal()
+    try:
+        record, raw_key = auth_service.create_api_key(session, label="test-client")
+        yield record, raw_key
+    finally:
+        session.close()
+
+
+@pytest.fixture
+def client(api_key):
+    """Pre-authenticated by default: every existing test that posts through
+    the API exercises the real, server-verified auth path (see `api_key`
+    above) via a default header, rather than every test file needing its own
+    `Authorization` boilerplate. Tests that specifically exercise auth
+    failure build their own unauthenticated `TestClient` instead.
+    """
+    _, raw_key = api_key
     with TestClient(app) as test_client:
+        test_client.headers["Authorization"] = f"Bearer {raw_key}"
         yield test_client
 
 

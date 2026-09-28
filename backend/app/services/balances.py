@@ -57,6 +57,34 @@ def derive_for_account(db: Session, account_id: uuid.UUID) -> DerivedBalance:
     return DerivedBalance(int(row[0]), int(row[1]), int(row[2]), row[3])
 
 
+def derive_for_account_as_of(
+    db: Session, account_id: uuid.UUID, as_of: datetime, *, inclusive: bool = True
+) -> DerivedBalance:
+    """The same aggregate as `derive_for_account`, restricted to entries that
+    existed in the ledger at a given point in time.
+
+    Entries are append-only and `created_at` is server-assigned at insert
+    time, so "the balance as of `as_of`" is exactly the same sum, with one
+    extra predicate - no separate historical ledger, no snapshot table, no
+    second source of truth. `inclusive=False` (entries strictly *before*
+    `as_of`) is what lets callers partition history cleanly: everything
+    before a window's start is the opening balance, everything from the
+    start onward - up to and including the end - is what happened, and the
+    two must sum to the closing balance because they were the same
+    underlying set, split by the same field.
+    """
+    cutoff = LedgerEntry.created_at <= as_of if inclusive else LedgerEntry.created_at < as_of
+    row = db.execute(
+        select(
+            _DEBIT_SUM,
+            _CREDIT_SUM,
+            func.count(LedgerEntry.id),
+            func.max(LedgerEntry.seq),
+        ).where(LedgerEntry.account_id == account_id, cutoff)
+    ).one()
+    return DerivedBalance(int(row[0]), int(row[1]), int(row[2]), row[3])
+
+
 def derive_all(db: Session) -> dict[uuid.UUID, DerivedBalance]:
     """Every account's balance in one pass, for integrity verification."""
     rows = db.execute(

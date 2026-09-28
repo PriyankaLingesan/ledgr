@@ -132,7 +132,11 @@ def test_posting_returns_the_full_entry_set(client, chart):
     assert len(body["entries"]) == 2
     assert {e["direction"] for e in body["entries"]} == {"DEBIT", "CREDIT"}
     assert body["entries"][0]["account"]["code"]
-    assert body["actor"] == "ops.tester"
+    # `X-Actor: ops.tester` (sent by `post_transaction` below) is a spoofing
+    # attempt: the recorded actor must come from the authenticated API key
+    # ("test-client", from the `client` fixture), never the client-supplied
+    # header - see app.api.deps.actor.
+    assert body["actor"] == "test-client"
     assert body["request_id"]
 
 
@@ -306,7 +310,8 @@ def test_audit_trail_records_every_write(client, chart):
     assert events["total"] == 1
     event = events["items"][0]
     assert event["event_type"] == "transaction.posted"
-    assert event["actor"] == "ops.tester"
+    # Same spoofing check as above: X-Actor: ops.tester is sent but ignored.
+    assert event["actor"] == "test-client"
     assert event["payload"]["reference"] == posted["reference"]
     assert event["request_id"] == posted["request_id"]
 

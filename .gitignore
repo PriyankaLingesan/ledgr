@@ -24,3 +24,5 @@ dist/
 Thumbs.db
 *.egg-info/
 build/
+*.pem
+.claude/scheduled_tasks.lock

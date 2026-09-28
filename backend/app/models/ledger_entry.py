@@ -76,6 +76,16 @@ class LedgerEntry(Base):
         Index("ix_ledger_entries_transaction", "transaction_id"),
         Index("ix_ledger_entries_created_at", "created_at"),
         Index("ix_ledger_entries_currency_direction", "currency", "direction"),
+        # investigation.duplicate_candidates()'s self-join predicate: equality
+        # on the first four columns, then a range scan on created_at.
+        Index(
+            "ix_ledger_entries_duplicate_candidates",
+            "account_id",
+            "amount_minor",
+            "direction",
+            "currency",
+            "created_at",
+        ),
     )
 
     @property

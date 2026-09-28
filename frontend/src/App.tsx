@@ -7,8 +7,12 @@ import AccountDetailPage from './pages/AccountDetailPage';
 import AccountsPage from './pages/AccountsPage';
 import AuditPage from './pages/AuditPage';
 import DashboardPage from './pages/DashboardPage';
+import FlightRecorderPage from './pages/FlightRecorderPage';
 import IntelligencePage from './pages/IntelligencePage';
+import InvestigationDetailPage from './pages/InvestigationDetailPage';
+import InvestigationsPage from './pages/InvestigationsPage';
 import LedgerPage from './pages/LedgerPage';
+import ReconciliationPage from './pages/ReconciliationPage';
 import AboutMarketingPage from './pages/marketing/AboutPage';
 import LandingPage from './pages/marketing/LandingPage';
 import LoginPage from './pages/marketing/LoginPage';
@@ -41,6 +45,13 @@ export default function App() {
         element={<Console><TransactionDetailPage /></Console>}
       />
       <Route path="/app/ledger" element={<Console><LedgerPage /></Console>} />
+      <Route path="/app/flight-recorder" element={<Console><FlightRecorderPage /></Console>} />
+      <Route path="/app/investigations" element={<Console><InvestigationsPage /></Console>} />
+      <Route path="/app/reconciliation" element={<Console><ReconciliationPage /></Console>} />
+      <Route
+        path="/app/investigations/:caseId"
+        element={<Console><InvestigationDetailPage /></Console>}
+      />
       <Route path="/app/intelligence" element={<Console><IntelligencePage /></Console>} />
       <Route path="/app/audit" element={<Console><AuditPage /></Console>} />
       <Route path="/app/about" element={<Console><AboutPage /></Console>} />

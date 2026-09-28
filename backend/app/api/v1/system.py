@@ -12,23 +12,29 @@ from sqlalchemy import func, select, text
 from app.api.deps import DbSession, PaginationParams
 from app.core import money
 from app.core.config import settings
+from app.core.metrics import snapshot as metrics_snapshot
 from app.models.account import Account, AccountBalance
-from app.models.enums import AccountStatus, TransactionStatus
+from app.models.enums import AccountStatus, InvestigationStatus, TransactionStatus
 from app.models.ledger_entry import LedgerEntry
 from app.models.transaction import Transaction
 from app.schemas.common import Money, Page
+from app.schemas.investigation import ControlExceptionOut, DuplicateGroupOut, IntegrityChecklistOut
+from app.schemas.serialize import control_exception_out, duplicate_group_out, integrity_check_out
 from app.schemas.system import (
     AccountTypeCount,
     AuditEventOut,
     CurrencyOut,
     DailyVolume,
+    ErrorPathCount,
     HealthOut,
     IntegrityIssue,
     IntegrityReport,
+    LatestReconciliationRunOut,
+    OperationalSnapshotOut,
     SystemStatsOut,
     TrialBalanceRow,
 )
-from app.services import balances, queries
+from app.services import balances, investigation, investigation_cases, queries, reconciliation
 
 router = APIRouter(prefix="/system", tags=["system"])
 
@@ -46,6 +52,52 @@ def health(db: DbSession) -> HealthOut:
         version="1.0.0",
         environment=settings.environment,
         database=database,
+    )
+
+
+@router.get("/metrics", response_model=OperationalSnapshotOut)
+def operational_snapshot(db: DbSession) -> OperationalSnapshotOut:
+    """One call for "does anything need attention right now" - composed
+    entirely from existing, already-tested functions (integrity, open
+    investigations, the latest reconciliation run) plus in-process request
+    counters. Nothing here is estimated or cached separately from what
+    those functions themselves would report.
+    """
+    metrics = metrics_snapshot()
+
+    trial = balances.trial_balance(db)
+    checks = investigation.integrity_checklist(db)
+
+    _, open_count = investigation_cases.list_cases(
+        db, status=InvestigationStatus.OPEN, limit=1
+    )
+
+    runs, _ = reconciliation.list_runs(db, limit=1)
+    latest_run = (
+        LatestReconciliationRunOut(
+            run_number=runs[0].seq,
+            created_at=runs[0].created_at,
+            missing_internal_count=runs[0].missing_internal_count,
+            missing_external_count=runs[0].missing_external_count,
+            mismatch_count=runs[0].mismatch_count,
+            ambiguous_count=runs[0].ambiguous_count,
+        )
+        if runs
+        else None
+    )
+
+    return OperationalSnapshotOut(
+        generated_at=datetime.now(UTC),
+        uptime_seconds=metrics.uptime_seconds,
+        total_requests=metrics.total_requests,
+        requests_by_status_class=metrics.requests_by_status_class,
+        top_error_paths=[
+            ErrorPathCount(path=path, count=count) for path, count in metrics.top_error_paths
+        ],
+        ledger_balanced=all(row.balanced for row in trial),
+        integrity_all_passed=all(c.passed for c in checks),
+        open_investigation_count=open_count,
+        latest_reconciliation_run=latest_run,
     )
 
 
@@ -175,6 +227,56 @@ def integrity(db: DbSession) -> IntegrityReport:
         unbalanced_transaction_ids=unbalanced,
         issues=issues,
     )
+
+
+@router.get("/duplicates", response_model=list[DuplicateGroupOut])
+def duplicates(
+    db: DbSession,
+    window_minutes: int = Query(default=10, ge=1, le=1440),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> list[DuplicateGroupOut]:
+    """Deterministic, structural duplicate-posting candidates.
+
+    Same account, same signed amount, same direction, posted within
+    `window_minutes` of each other on two different transactions. This is a
+    prompt to look closer, not a verdict - no AI, no fraud scoring; the
+    operator decides what a match actually means.
+    """
+    return [
+        duplicate_group_out(g)
+        for g in investigation.duplicate_candidates(db, window_minutes=window_minutes, limit=limit)
+    ]
+
+
+@router.get("/integrity-checklist", response_model=IntegrityChecklistOut)
+def integrity_checklist(db: DbSession) -> IntegrityChecklistOut:
+    """Plain-language checklist over the correctness properties LEDGR already
+    enforces - every check here re-verifies real data, none are static claims.
+    """
+    checks = investigation.integrity_checklist(db)
+    return IntegrityChecklistOut(
+        checked_at=datetime.now(UTC),
+        all_passed=all(c.passed for c in checks),
+        checks=[integrity_check_out(c) for c in checks],
+    )
+
+
+@router.get("/control-exceptions", response_model=list[ControlExceptionOut])
+def control_exceptions(
+    db: DbSession,
+    window_minutes: int = Query(default=10, ge=1, le=1440),
+) -> list[ControlExceptionOut]:
+    """The Control Exception Engine: every real signal LEDGR's own checks can
+    currently support - potential duplicates and failed integrity checks -
+    unified into one list. Each exception names what was detected and what
+    data supports it; nothing here is a verdict, and nothing is ever labelled
+    fraud. This is the list the Financial Control Center's "Control
+    exceptions" section and "Investigate" actions read from.
+    """
+    return [
+        control_exception_out(e)
+        for e in investigation.list_control_exceptions(db, duplicate_window_minutes=window_minutes)
+    ]
 
 
 @router.get("/audit", response_model=Page[AuditEventOut])

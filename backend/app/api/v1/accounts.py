@@ -1,6 +1,7 @@
 """Account endpoints."""
 
 import uuid
+from datetime import datetime
 
 from fastapi import APIRouter, Query, status
 
@@ -13,15 +14,18 @@ from app.schemas.account import (
     AccountUpdate,
 )
 from app.schemas.common import Page
+from app.schemas.investigation import AccountBalanceAtOut, BalanceChangeOut
 from app.schemas.serialize import (
+    account_balance_at_out,
     account_balance_out,
     account_out,
+    balance_change_out,
     ledger_entry_out,
     transaction_out,
 )
 from app.schemas.transaction import LedgerEntryOut, TransactionOut
 from app.services import accounts as account_service
-from app.services import balances, queries
+from app.services import balances, investigation, queries
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
 
@@ -125,13 +129,22 @@ def get_account_entries(
     db: DbSession,
     page: PaginationParams,
     direction: EntryDirection | None = Query(default=None),
+    since: datetime | None = Query(default=None, description="Only entries at/after this time"),
+    until: datetime | None = Query(default=None, description="Only entries at/before this time"),
 ) -> Page[LedgerEntryOut]:
-    """The account's statement: every entry that shaped its balance."""
+    """The account's statement: every entry that shaped its balance.
+
+    `since`/`until` turn this into the account's financial timeline for a
+    window - the same `queries.list_entries` filters the ledger explorer
+    already uses, just exposed on this route too.
+    """
     account_service.get_account(db, account_id)  # 404 rather than an empty page
     items, total = queries.list_entries(
         db,
         account_id=account_id,
         direction=direction,
+        created_from=since,
+        created_to=until,
         limit=page.limit,
         offset=page.offset,
     )
@@ -141,6 +154,41 @@ def get_account_entries(
         limit=page.limit,
         offset=page.offset,
     )
+
+
+@router.get("/{account_id}/balance-at", response_model=AccountBalanceAtOut)
+def get_account_balance_at(
+    account_id: uuid.UUID,
+    db: DbSession,
+    at: datetime = Query(..., description="Reconstruct the balance as of this instant"),
+) -> AccountBalanceAtOut:
+    """Historical balance reconstruction.
+
+    Entries are append-only and immutable, so "the balance at `at`" is just
+    `derive_for_account`'s own aggregate with one extra predicate
+    (`created_at <= at`) - never a snapshot table, never a second opinion
+    about what the balance was.
+    """
+    return account_balance_at_out(investigation.balance_at(db, account_id, at))
+
+
+@router.get("/{account_id}/balance-change", response_model=BalanceChangeOut)
+def get_account_balance_change(
+    account_id: uuid.UUID,
+    db: DbSession,
+    from_: datetime | None = Query(default=None, alias="from"),
+    to: datetime | None = Query(default=None),
+) -> BalanceChangeOut:
+    """The Financial Flight Recorder: opening balance, every event in the
+    window, and the closing balance those events produce.
+
+    This is the one engine behind "Explain This Balance" (call it with no
+    params - defaults to the last 30 days), "why did my balance change", and
+    comparing two points in time (pass both `from` and `to` explicitly).
+    `closing_balance - opening_balance` always equals the sum of the signed
+    `effect` of every event returned - see `reconciled`.
+    """
+    return balance_change_out(investigation.balance_change(db, account_id, from_ts=from_, to_ts=to))
 
 
 @router.get("/{account_id}/transactions", response_model=Page[TransactionOut])

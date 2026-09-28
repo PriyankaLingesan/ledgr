@@ -7,11 +7,12 @@
  * rather than assumed.
  */
 
-import { ArrowLeftRight, ChevronRight, RotateCcw, Undo2 } from 'lucide-react';
+import { ArrowLeftRight, ChevronRight, Eye, PenLine, RotateCcw, Undo2 } from 'lucide-react';
 import { useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { ExplainTransactionPanel } from '../components/ai/ExplainTransactionPanel';
+import { TransactionLineagePanel } from '../components/investigation/TransactionLineagePanel';
 import { PageHeader } from '../components/layout/AppShell';
 import {
   AccountRef,
@@ -26,6 +27,7 @@ import {
   Badge,
   Button,
   Field,
+  Input,
   Panel,
   PanelHeader,
   Skeleton,
@@ -35,8 +37,15 @@ import {
 import { ErrorState, Table, TableScroller, THead } from '../components/ui/Table';
 import { ApiError } from '../lib/api';
 import { cn } from '../lib/cn';
-import { formatDateTime, formatInteger } from '../lib/format';
-import { useAuditEvents, useReverseTransaction, useTransaction } from '../lib/queries';
+import { exponentFor, formatDateTime, formatInteger, parseAmountToMinor } from '../lib/format';
+import {
+  useAuditEvents,
+  useCorrectTransaction,
+  useCurrencies,
+  useReverseTransaction,
+  useSimulateCorrection,
+  useTransaction,
+} from '../lib/queries';
 import type { LedgerEntry, Transaction } from '../lib/types';
 
 function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
@@ -185,9 +194,199 @@ function ReverseDialog({
   );
 }
 
+/**
+ * Guided correction: reverses the original and posts a fresh, corrected
+ * transaction in one step. The account and direction of each entry are
+ * fixed - only the amount is editable, matching the common real-world case
+ * (a posted amount was wrong) without exposing a full entry editor here.
+ */
+function CorrectDialog({
+  transaction,
+  open,
+  onClose,
+}: {
+  transaction: Transaction;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const { data: currencies } = useCurrencies();
+  const [reason, setReason] = useState('');
+  const [amounts, setAmounts] = useState<Record<string, string>>(() =>
+    Object.fromEntries(
+      transaction.entries.map((entry) => [
+        entry.id,
+        (entry.amount.amount_minor / 10 ** exponentFor(transaction.currency, currencies)).toFixed(
+          exponentFor(transaction.currency, currencies),
+        ),
+      ]),
+    ),
+  );
+  const correct = useCorrectTransaction();
+  const simulate = useSimulateCorrection();
+  const navigate = useNavigate();
+  const error = correct.error instanceof ApiError ? correct.error : null;
+  const simulateError = simulate.error instanceof ApiError ? simulate.error : null;
+
+  const parsed = transaction.entries.map((entry) => ({
+    entry,
+    minor: parseAmountToMinor(amounts[entry.id] ?? '', transaction.currency, currencies),
+  }));
+  const allValid = parsed.every((p) => p.minor !== null && p.minor > 0);
+  const debits = parsed
+    .filter((p) => p.entry.direction === 'DEBIT')
+    .reduce((sum, p) => sum + (p.minor ?? 0), 0);
+  const credits = parsed
+    .filter((p) => p.entry.direction === 'CREDIT')
+    .reduce((sum, p) => sum + (p.minor ?? 0), 0);
+  const balanced = allValid && debits === credits;
+
+  const entriesForRequest = () =>
+    parsed.map((p) => ({
+      account_id: p.entry.account_id,
+      direction: p.entry.direction,
+      amount_minor: p.minor as number,
+    }));
+
+  const preview = () => {
+    if (!balanced) return;
+    simulate.mutate({ id: transaction.id, entries: entriesForRequest() });
+  };
+
+  const submit = () => {
+    if (!balanced || !reason.trim()) return;
+    correct.mutate(
+      { id: transaction.id, reason: reason.trim(), entries: entriesForRequest() },
+      {
+        onSuccess: (result) => {
+          onClose();
+          navigate(`/app/transactions/${result.corrected_id}`);
+        },
+      },
+    );
+  };
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Correct transaction"
+      description="Reverses the original and posts a corrected replacement. The original is never edited."
+      footer={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button
+            variant="primary"
+            disabled={correct.isPending || !balanced || !reason.trim()}
+            icon={correct.isPending ? <Spinner /> : <PenLine className="h-3.5 w-3.5" />}
+            onClick={submit}
+          >
+            Post correction
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <p className="text-xs leading-relaxed text-ink-3">
+          <span className="font-medium text-ink-2">{transaction.reference}</span> will be marked{' '}
+          <span className="font-medium text-ink-2">REVERSED</span> and kept exactly as posted. A
+          new transaction is created with the amounts below.
+        </p>
+
+        <div className="space-y-2">
+          {transaction.entries.map((entry) => (
+            <div key={entry.id} className="flex items-center gap-2">
+              <DirectionBadge direction={entry.direction} />
+              <span className="min-w-0 flex-1 truncate text-[0.8125rem] text-ink-2">
+                <AccountRef account={entry.account} />
+              </span>
+              <Input
+                className="w-32 text-right"
+                value={amounts[entry.id] ?? ''}
+                onChange={(event) => {
+                  setAmounts((prev) => ({ ...prev, [entry.id]: event.target.value }));
+                  simulate.reset(); // a stale preview must never be shown against new amounts
+                }}
+              />
+            </div>
+          ))}
+        </div>
+
+        {!balanced && (
+          <p className="text-xs text-negative">Corrected debits must still equal credits.</p>
+        )}
+
+        <div className="rounded-sm border border-border bg-surface-2 px-3 py-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <p className="text-[0.8125rem] font-medium text-ink">What-if impact</p>
+              <p className="text-xs text-ink-3">
+                Computed without writing anything - discard freely by closing this dialog.
+              </p>
+            </div>
+            <Button
+              size="sm"
+              icon={simulate.isPending ? <Spinner /> : <Eye className="h-3.5 w-3.5" />}
+              disabled={!balanced || simulate.isPending}
+              onClick={preview}
+            >
+              Preview impact
+            </Button>
+          </div>
+
+          {simulateError && (
+            <p className="mt-2 text-xs text-negative">
+              <span className="num font-semibold">{simulateError.code}</span> —{' '}
+              {simulateError.message}
+            </p>
+          )}
+
+          {simulate.data && (
+            <ul className="mt-2.5 space-y-1.5 border-t border-border pt-2.5">
+              {simulate.data.impacts.map((impact) => (
+                <li
+                  key={impact.account_id}
+                  className="flex items-center justify-between gap-3 text-[0.8125rem]"
+                >
+                  <span className="text-ink-2">{impact.account_code}</span>
+                  <span className="flex items-center gap-2">
+                    <Amount money={impact.current_balance} className="text-ink-3 line-through" />
+                    <span className="text-ink-3">→</span>
+                    <Amount money={impact.simulated_balance} tone="auto" className="font-medium" />
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <Field
+          label="Reason"
+          htmlFor="correction-reason"
+          required
+          hint="Recorded on the reversal and the corrected transaction."
+        >
+          <Textarea
+            id="correction-reason"
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            placeholder="Incorrect amount"
+          />
+        </Field>
+
+        {error && (
+          <p className="rounded-sm border border-negative/30 bg-negative-soft px-3 py-2 text-xs text-negative">
+            <span className="num font-semibold">{error.code}</span> — {error.message}
+          </p>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
 export default function TransactionDetailPage() {
   const { transactionId } = useParams();
   const [reverseOpen, setReverseOpen] = useState(false);
+  const [correctOpen, setCorrectOpen] = useState(false);
   const query = useTransaction(transactionId);
   const audit = useAuditEvents({ resource_id: transactionId, limit: 20 }, Boolean(transactionId));
 
@@ -235,13 +434,21 @@ export default function TransactionDetailPage() {
             <div className="flex items-center gap-2">
               <TransactionStatusBadge status={transaction.status} kind={transaction.kind} />
               {canReverse && (
-                <Button
-                  variant="danger"
-                  icon={<RotateCcw className="h-3.5 w-3.5" strokeWidth={1.9} />}
-                  onClick={() => setReverseOpen(true)}
-                >
-                  Reverse
-                </Button>
+                <>
+                  <Button
+                    icon={<PenLine className="h-3.5 w-3.5" strokeWidth={1.9} />}
+                    onClick={() => setCorrectOpen(true)}
+                  >
+                    Correct
+                  </Button>
+                  <Button
+                    variant="danger"
+                    icon={<RotateCcw className="h-3.5 w-3.5" strokeWidth={1.9} />}
+                    onClick={() => setReverseOpen(true)}
+                  >
+                    Reverse
+                  </Button>
+                </>
               )}
             </div>
           )
@@ -298,6 +505,8 @@ export default function TransactionDetailPage() {
             />
 
             <ExplainTransactionPanel transactionId={transaction.id} />
+
+            <TransactionLineagePanel transactionId={transaction.id} />
 
             <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
               <Panel className="overflow-hidden xl:col-span-2">
@@ -483,11 +692,18 @@ export default function TransactionDetailPage() {
       </div>
 
       {transaction && (
-        <ReverseDialog
-          transaction={transaction}
-          open={reverseOpen}
-          onClose={() => setReverseOpen(false)}
-        />
+        <>
+          <ReverseDialog
+            transaction={transaction}
+            open={reverseOpen}
+            onClose={() => setReverseOpen(false)}
+          />
+          <CorrectDialog
+            transaction={transaction}
+            open={correctOpen}
+            onClose={() => setCorrectOpen(false)}
+          />
+        </>
       )}
     </>
   );

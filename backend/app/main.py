@@ -15,6 +15,7 @@ from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.errors import LedgrError
 from app.core.logging import configure_logging, request_id_var
+from app.core.metrics import record_request
 
 logger = logging.getLogger("ledgr.api")
 
@@ -68,6 +69,7 @@ def create_app() -> FastAPI:
             request_id_var.reset(token)
         duration_ms = round((time.perf_counter() - started) * 1000, 2)
         response.headers["X-Request-ID"] = rid
+        record_request(path=request.url.path, status_code=response.status_code)
         logger.info(
             "request",
             extra={

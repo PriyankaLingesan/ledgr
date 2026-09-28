@@ -308,8 +308,15 @@ def _apply_to_balance_cache(
             )
 
 
-def post_transaction(db: Session, cmd: PostCommand) -> Transaction:
-    """Post a balanced transaction atomically."""
+def post_transaction(db: Session, cmd: PostCommand, *, auto_commit: bool = True) -> Transaction:
+    """Post a balanced transaction atomically.
+
+    `auto_commit=False` lets a caller compose this write with another one
+    (see `investigation.correct_transaction`) inside a single database
+    transaction, so the two either both commit or neither does. The flush
+    inside `_write_transaction` still happens either way - CHECK constraints
+    and UNIQUE violations are caught here regardless of who calls commit.
+    """
     # `_write_transaction` is inside the try, not just `db.commit()`: a UNIQUE
     # violation on `reference` raises the moment its INSERT is flushed - which
     # `_write_transaction` does itself, to assign `transaction.id`/`seq` - not
@@ -334,12 +341,13 @@ def post_transaction(db: Session, cmd: PostCommand) -> Transaction:
                 "accounts": sorted({str(e.account_id) for e in cmd.entries}),
             },
         )
-        db.commit()
+        if auto_commit:
+            db.commit()
     except IntegrityError as exc:
         db.rollback()
         raise _translate_integrity_error(exc, reference=cmd.reference) from exc
 
-    return load_transaction(db, transaction.id)
+    return load_transaction(db, transaction.id) if auto_commit else transaction
 
 
 def reverse_transaction(
@@ -352,12 +360,17 @@ def reverse_transaction(
     actor: str = "system",
     request_id: str | None = None,
     idempotency_key: str | None = None,
+    auto_commit: bool = True,
 ) -> Transaction:
     """Reverse a posted transaction with a mirrored compensating entry set.
 
     The original is never touched beyond a POSTED -> REVERSED status flip; its
     entries stay exactly as they were posted. Auditors need to see both the
     mistake and the correction.
+
+    `auto_commit=False` - see `post_transaction`: lets a guided correction
+    (reverse, then post the replacement) commit both writes together or
+    neither at all.
     """
     original = db.execute(
         select(Transaction).where(Transaction.id == transaction_id).with_for_update()
@@ -451,7 +464,8 @@ def reverse_transaction(
                 "reason": reason,
             },
         )
-        db.commit()
+        if auto_commit:
+            db.commit()
     except IntegrityError as exc:
         db.rollback()
         # The unique index on reverses_transaction_id is the real guard against
@@ -460,7 +474,7 @@ def reverse_transaction(
             exc, reference=reference, transaction_id=transaction_id
         ) from exc
 
-    return load_transaction(db, reversal.id)
+    return load_transaction(db, reversal.id) if auto_commit else reversal
 
 
 def _translate_integrity_error(

@@ -5,11 +5,14 @@ has to be rendered against its own currency exponent, and because the API shape
 should be free to diverge from the storage shape (`extra` -> `metadata`).
 """
 
+import hashlib
 from datetime import UTC, datetime
 
 from app.models.account import Account
 from app.models.enums import EntryDirection, NormalBalance
+from app.models.investigation import Investigation
 from app.models.ledger_entry import LedgerEntry
+from app.models.reconciliation import ExternalTransaction, ReconciliationResult, ReconciliationRun
 from app.models.transaction import Transaction
 from app.schemas.account import (
     AccountBalanceOut,
@@ -18,11 +21,42 @@ from app.schemas.account import (
     BalanceCacheOut,
 )
 from app.schemas.common import Money
+from app.schemas.investigation import (
+    AccountBalanceAtOut,
+    BalanceChangeOut,
+    ControlExceptionOut,
+    CorrectionSimulationOut,
+    DuplicateEntryOut,
+    DuplicateGroupOut,
+    IntegrityCheckOut,
+    InvestigationEventOut,
+    SimulatedAccountImpactOut,
+    TransactionLineageOut,
+    TransactionNodeOut,
+)
+from app.schemas.investigation_case import InvestigationCaseEvidenceOut, InvestigationCaseOut
+from app.schemas.reconciliation import (
+    ExternalTransactionOut,
+    ReconciliationResultOut,
+    ReconciliationRunOut,
+    ReconciliationRunSummaryOut,
+)
 from app.schemas.transaction import (
     LedgerEntryOut,
     TransactionOut,
     TransactionSummary,
 )
+from app.services.investigation import (
+    AccountBalanceAt,
+    BalanceChange,
+    ControlException,
+    CorrectionSimulation,
+    DuplicateGroup,
+    IntegrityCheck,
+    LedgerEvent,
+    TransactionLineage,
+)
+from app.services.investigation_cases import CaseEvidence
 
 
 def oriented_balance(normal_balance: NormalBalance, debits: int, credits: int) -> int:
@@ -186,4 +220,267 @@ def transaction_out(transaction: Transaction, *, with_entries: bool = True) -> T
         entries=[
             ledger_entry_out(entry, with_account=True, with_transaction=False) for entry in entries
         ],
+    )
+
+
+# --------------------------------------------------------------------------
+# investigation
+# --------------------------------------------------------------------------
+
+
+def account_balance_at_out(result: AccountBalanceAt) -> AccountBalanceAtOut:
+    account = result.account
+    balance = oriented_balance(
+        account.normal_balance, result.derived.debits_minor, result.derived.credits_minor
+    )
+    return AccountBalanceAtOut(
+        account_id=account.id,
+        account_code=account.code,
+        account_name=account.name,
+        currency=account.currency,
+        normal_balance=account.normal_balance,
+        as_of=result.as_of,
+        balance=Money.of(balance, account.currency),
+        debits=Money.of(result.derived.debits_minor, account.currency),
+        credits=Money.of(result.derived.credits_minor, account.currency),
+        entry_count=result.derived.entry_count,
+    )
+
+
+def investigation_event_out(event: LedgerEvent, *, currency: str) -> InvestigationEventOut:
+    entry, transaction = event.entry, event.transaction
+    return InvestigationEventOut(
+        entry_id=entry.id,
+        seq=entry.seq,
+        transaction_id=transaction.id,
+        reference=transaction.reference,
+        description=transaction.description,
+        direction=entry.direction,
+        amount=Money.of(entry.amount_minor, currency),
+        effect=Money.of(event.effect_minor, currency),
+        running_balance=Money.of(event.running_balance_minor, currency),
+        created_at=entry.created_at,
+        transaction_status=transaction.status,
+        transaction_kind=transaction.kind,
+        reverses_transaction_id=transaction.reverses_transaction_id,
+        reversed_by_transaction_id=(
+            transaction.reversed_by.id if transaction.reversed_by is not None else None
+        ),
+    )
+
+
+def balance_change_out(change: BalanceChange) -> BalanceChangeOut:
+    account = change.account
+    currency = account.currency
+    return BalanceChangeOut(
+        account_id=account.id,
+        account_code=account.code,
+        account_name=account.name,
+        currency=currency,
+        normal_balance=account.normal_balance,
+        from_=change.from_ts,
+        to=change.to_ts,
+        opening_balance=Money.of(change.opening_balance_minor, currency),
+        closing_balance=Money.of(change.closing_balance_minor, currency),
+        net_change=Money.of(change.net_change_minor, currency),
+        event_count=len(change.events),
+        events=[investigation_event_out(e, currency=currency) for e in change.events],
+        reconciled=change.reconciled,
+    )
+
+
+def duplicate_group_out(group: DuplicateGroup) -> DuplicateGroupOut:
+    return DuplicateGroupOut(
+        reasons=group.reasons,
+        entries=[
+            DuplicateEntryOut(
+                transaction_id=entry.transaction_id,
+                reference=entry.transaction.reference,
+                description=entry.transaction.description,
+                account_code=entry.account.code,
+                direction=entry.direction,
+                amount=Money.of(entry.amount_minor, entry.currency),
+                created_at=entry.created_at,
+            )
+            for entry in group.entries
+        ],
+    )
+
+
+def integrity_check_out(check: IntegrityCheck) -> IntegrityCheckOut:
+    return IntegrityCheckOut(name=check.name, passed=check.passed, detail=check.detail)
+
+
+# --------------------------------------------------------------------------
+# transaction lineage
+# --------------------------------------------------------------------------
+
+
+def transaction_node_out(transaction: Transaction) -> TransactionNodeOut:
+    return TransactionNodeOut(
+        id=transaction.id,
+        reference=transaction.reference,
+        description=transaction.description,
+        status=transaction.status,
+        kind=transaction.kind,
+        currency=transaction.currency,
+        total_debits=Money.of(transaction.total_debits_minor, transaction.currency),
+        total_credits=Money.of(transaction.total_credits_minor, transaction.currency),
+        posted_at=transaction.posted_at,
+    )
+
+
+def transaction_lineage_out(lineage: TransactionLineage) -> TransactionLineageOut:
+    return TransactionLineageOut(
+        root=transaction_node_out(lineage.root),
+        accounts=[account_summary(a) for a in lineage.accounts],
+        reverses=transaction_node_out(lineage.reverses) if lineage.reverses else None,
+        reversed_by=transaction_node_out(lineage.reversed_by) if lineage.reversed_by else None,
+        corrects=transaction_node_out(lineage.corrects) if lineage.corrects else None,
+        corrected_by=transaction_node_out(lineage.corrected_by) if lineage.corrected_by else None,
+    )
+
+
+# --------------------------------------------------------------------------
+# what-if correction simulator
+# --------------------------------------------------------------------------
+
+
+def correction_simulation_out(simulation: CorrectionSimulation) -> CorrectionSimulationOut:
+    return CorrectionSimulationOut(
+        original_id=simulation.original.id,
+        original_reference=simulation.original.reference,
+        impacts=[
+            SimulatedAccountImpactOut(
+                account_id=impact.account.id,
+                account_code=impact.account.code,
+                account_name=impact.account.name,
+                currency=impact.account.currency,
+                current_balance=Money.of(impact.current_balance_minor, impact.account.currency),
+                simulated_balance=Money.of(
+                    impact.simulated_balance_minor, impact.account.currency
+                ),
+                delta=Money.of(impact.delta_minor, impact.account.currency),
+            )
+            for impact in simulation.impacts
+        ],
+    )
+
+
+# --------------------------------------------------------------------------
+# control exceptions
+# --------------------------------------------------------------------------
+
+
+def control_exception_out(exc: ControlException) -> ControlExceptionOut:
+    fingerprint_src = f"{exc.kind}|{exc.title}|{sorted(str(t) for t in exc.transaction_ids)}"
+    exc_id = hashlib.sha256(fingerprint_src.encode("utf-8")).hexdigest()[:16]
+    return ControlExceptionOut(
+        id=exc_id,
+        kind=exc.kind,
+        title=exc.title,
+        detail=exc.detail,
+        account_id=exc.account_id,
+        transaction_ids=exc.transaction_ids,
+        detected_at=exc.detected_at,
+    )
+
+
+# --------------------------------------------------------------------------
+# investigation cases
+# --------------------------------------------------------------------------
+
+
+def investigation_case_out(case: Investigation) -> InvestigationCaseOut:
+    return InvestigationCaseOut(
+        id=case.id,
+        case_number=case.case_number,
+        title=case.title,
+        issue_summary=case.issue_summary,
+        status=case.status,
+        source=case.source,
+        source_reference=case.source_reference,
+        account=account_summary(case.account) if case.account is not None else None,
+        window_from=case.window_from,
+        window_to=case.window_to,
+        resolved_at=case.resolved_at,
+        resolution_note=case.resolution_note,
+        correction_transaction_id=case.correction_transaction_id,
+        created_by=case.created_by,
+        created_at=case.created_at,
+        updated_at=case.updated_at,
+    )
+
+
+def investigation_case_evidence_out(evidence: CaseEvidence) -> InvestigationCaseEvidenceOut:
+    return InvestigationCaseEvidenceOut(
+        case=investigation_case_out(evidence.case),
+        balance_change=(
+            balance_change_out(evidence.balance_change) if evidence.balance_change else None
+        ),
+        duplicate_candidates=[duplicate_group_out(g) for g in evidence.duplicate_candidates],
+        integrity=[integrity_check_out(c) for c in evidence.integrity],
+        lineage=transaction_lineage_out(evidence.lineage) if evidence.lineage else None,
+    )
+
+
+# --------------------------------------------------------------------------
+# external reconciliation
+# --------------------------------------------------------------------------
+
+
+def external_transaction_out(external: ExternalTransaction) -> ExternalTransactionOut:
+    return ExternalTransactionOut(
+        id=external.id,
+        source_system=external.source_system,
+        external_id=external.external_id,
+        account_reference=external.account_reference,
+        amount=Money.of(external.amount_minor, external.currency),
+        direction=external.direction,
+        status=external.status,
+        transaction_timestamp=external.transaction_timestamp,
+        description=external.description,
+    )
+
+
+def reconciliation_result_out(result: ReconciliationResult) -> ReconciliationResultOut:
+    external = result.external_transaction
+    internal = result.internal_transaction
+    currency = external.currency if external else (internal.currency if internal else None)
+    return ReconciliationResultOut(
+        id=result.id,
+        status=result.status,
+        explanation=result.explanation,
+        difference=(
+            Money.of(result.difference_minor, currency)
+            if result.difference_minor is not None and currency
+            else None
+        ),
+        external_transaction=external_transaction_out(external) if external else None,
+        internal_transaction_id=internal.id if internal else None,
+        internal_reference=internal.reference if internal else None,
+        internal_amount=(
+            Money.of(internal.total_debits_minor, internal.currency) if internal else None
+        ),
+    )
+
+
+def reconciliation_run_summary_out(run: ReconciliationRun) -> ReconciliationRunSummaryOut:
+    return ReconciliationRunSummaryOut(
+        id=run.id,
+        run_number=run.seq,
+        created_at=run.created_at,
+        external_count=run.external_count,
+        matched_count=run.matched_count,
+        mismatch_count=run.mismatch_count,
+        missing_internal_count=run.missing_internal_count,
+        missing_external_count=run.missing_external_count,
+        ambiguous_count=run.ambiguous_count,
+    )
+
+
+def reconciliation_run_out(run: ReconciliationRun) -> ReconciliationRunOut:
+    return ReconciliationRunOut(
+        **reconciliation_run_summary_out(run).model_dump(),
+        results=[reconciliation_result_out(r) for r in run.results],
     )

@@ -80,6 +80,38 @@ class IntegrityReport(BaseModel):
     issues: list[IntegrityIssue]
 
 
+class ErrorPathCount(BaseModel):
+    path: str
+    count: int
+
+
+class LatestReconciliationRunOut(BaseModel):
+    run_number: int
+    created_at: datetime
+    missing_internal_count: int
+    missing_external_count: int
+    mismatch_count: int
+    ambiguous_count: int
+
+
+class OperationalSnapshotOut(BaseModel):
+    """One call for "is anything wrong right now" - composes existing
+    checks (integrity, the latest reconciliation run) with in-process
+    request counters. Not a metrics exporter: single-process, resets on
+    restart, appropriate for a service with no multi-instance story.
+    """
+
+    generated_at: datetime
+    uptime_seconds: float
+    total_requests: int
+    requests_by_status_class: dict[str, int]
+    top_error_paths: list[ErrorPathCount]
+    ledger_balanced: bool
+    integrity_all_passed: bool
+    open_investigation_count: int
+    latest_reconciliation_run: LatestReconciliationRunOut | None
+
+
 class AuditEventOut(BaseModel):
     id: uuid.UUID
     seq: int
