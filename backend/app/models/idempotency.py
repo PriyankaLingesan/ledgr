@@ -15,6 +15,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    PrimaryKeyConstraint,
     String,
     func,
 )
@@ -22,16 +23,17 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
+from app.db.tenancy import TenantMixin
 from app.models.enums import IdempotencyStatus
 
 
-class IdempotencyRecord(Base):
+class IdempotencyRecord(TenantMixin, Base):
     __tablename__ = "idempotency_keys"
 
     # Scope prevents a key minted for "post transaction" from colliding with
     # the same string used for "reverse transaction".
-    scope: Mapped[str] = mapped_column(String(64), primary_key=True)
-    key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    scope: Mapped[str] = mapped_column(String(64), nullable=False)
+    key: Mapped[str] = mapped_column(String(255), nullable=False)
 
     # SHA-256 of the canonical request body. A retry that changes the payload
     # is a client bug, not a retry, and is rejected rather than replayed.
@@ -57,6 +59,9 @@ class IdempotencyRecord(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
+        # Keys are per organization: one tenant can neither collide with, nor
+        # replay, another tenant's key.
+        PrimaryKeyConstraint("organization_id", "scope", "key", name="pk_idempotency_keys"),
         Index("ix_idempotency_keys_created_at", "created_at"),
         Index("ix_idempotency_keys_transaction", "transaction_id"),
     )

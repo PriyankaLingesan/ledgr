@@ -9,9 +9,9 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
 
-from app.db.session import SessionLocal
 from app.models.enums import EntryDirection
 from app.services import posting
+from tests.conftest import new_session
 
 # Every guard here (`ledgr_reject_mutation`, the transaction-immutability
 # trigger) raises with ERRCODE 'restrict_violation' - SQLSTATE class 23,
@@ -37,7 +37,7 @@ def posted(db, cash_and_revenue):
 
 
 def _raw(sql: str, **params):
-    with SessionLocal() as session:
+    with new_session() as session:
         session.execute(sa.text(sql), params)
         session.commit()
 
@@ -54,7 +54,7 @@ def test_ledger_entry_cannot_be_deleted(posted):
     with pytest.raises(DB_ERRORS):
         _raw("DELETE FROM ledger_entries WHERE id = :id", id=entry_id)
 
-    with SessionLocal() as session:
+    with new_session() as session:
         remaining = session.execute(
             sa.text("SELECT count(*) FROM ledger_entries WHERE transaction_id = :t"),
             {"t": posted.id},

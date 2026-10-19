@@ -1,6 +1,6 @@
 [project]
 name = "ledgr"
-version = "1.0.0"
+version = "1.1.0"
 description = "LEDGR - double-entry financial ledger platform"
 requires-python = ">=3.11"
 dependencies = [
@@ -35,7 +35,16 @@ target-version = "py311"
 select = ["E", "F", "I", "UP", "B", "C4", "SIM"]
 ignore = ["B008"]
 
+[tool.ruff.lint.per-file-ignores]
+# The demonstration scenario is mostly long narrative strings (synthetic business text).
+"app/demo/*.py" = ["E501"]
+"app/scripts/seed_meridian.py" = ["E501"]
+"tests/test_meridian.py" = ["E501"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
-markers = ["concurrency: tests that exercise real concurrent database sessions"]
+markers = [
+    "concurrency: tests that exercise real concurrent database sessions",
+    "shared_world: module builds one expensive world once and shares it across its tests",
+]

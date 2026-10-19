@@ -168,3 +168,38 @@ funds.
 - **Tests**: `test_balance_floor_is_enforced`, `test_exact_drain_to_zero_is_allowed`,
   `test_unconstrained_accounts_may_go_negative`,
   `test_balance_floor_holds_under_concurrent_withdrawals`.
+
+
+---
+
+## I14 — Records reference only their own organization
+
+A ledger entry cannot name an account or transaction from another organization; a balance row,
+reconciliation result, investigation, draft or idempotency record cannot point at another
+organization's transaction, account or result.
+
+- **Database**: composite foreign keys such as `ledger_entries (account_id, organization_id) →
+  accounts (id, organization_id)` (see migration `0008`). PostgreSQL rejects the row whatever
+  the application does. *This is the only part of tenant isolation that is database-enforced.*
+- **Application (second line, not a database guarantee)**: every ORM query is filtered by the
+  caller's organization and every write is stamped/checked (`app/db/tenancy.py`); a session without
+  an organization sees nothing. Raw SQL and Core-table queries bypass this filter and must add
+  `organization_id` explicitly - a static test enforces it for `Model.__table__` users.
+- **Tests**: `tests/test_tenant_isolation.py` (cross-organization probes of every endpoint family,
+  aggregates, and direct SQL against the composite foreign keys).
+
+## I15 — Names are unique per organization, and an organization cannot be changed
+
+- **Database**: `UNIQUE (organization_id, code)` on accounts, `(organization_id, reference)` on
+  transactions, primary key `(organization_id, scope, key)` on idempotency records,
+  `(organization_id, source_system, external_id)` on external records,
+  `(organization_id, label)` on API keys; the transaction guard trigger and the ledger/audit
+  triggers reject any change to `organization_id`.
+- **Tests**: same-code/same-reference/same-idempotency-key tests in two organizations.
+
+## What is application-level, not database-enforced
+
+For honesty: balance floors, currency matching, `ACTIVE` account checks, maker-checker
+separation of duties, the approval threshold, role permissions and the automatic tenant filter
+are enforced by application code (under row locks where state matters). Only the constraints,
+triggers and composite foreign keys named above hold for a client that bypasses the application.

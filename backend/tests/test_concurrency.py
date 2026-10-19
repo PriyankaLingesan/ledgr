@@ -11,16 +11,16 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from app.core.errors import AlreadyReversed, IdempotentRequestInFlight, InsufficientFunds
-from app.db.session import SessionLocal
 from app.models.enums import AccountType, EntryDirection
 from app.services import balances, idempotency, posting
+from tests.conftest import current_org_id, new_session
 
 pytestmark = pytest.mark.concurrency
 
 
 def _post(debit_id, credit_id, amount, description="concurrent"):
     """Run one posting in its own session, as a separate request would."""
-    session = SessionLocal()
+    session = new_session()
     try:
         posting.post_transaction(
             session,
@@ -151,7 +151,7 @@ def test_concurrent_reversals_produce_exactly_one(db, make_account):
 
     def worker(_):
         barrier.wait(timeout=10)
-        session = SessionLocal()
+        session = new_session()
         try:
             posting.reverse_transaction(session, original.id, actor="race")
             return "ok"
@@ -191,6 +191,7 @@ def test_concurrent_claims_of_the_same_new_key_exactly_one_wins():
         barrier.wait(timeout=10)
         try:
             result = idempotency.claim(
+                organization_id=current_org_id(),
                 scope=idempotency.SCOPE_POST_TRANSACTION,
                 key=key,
                 request_hash=request_hash,

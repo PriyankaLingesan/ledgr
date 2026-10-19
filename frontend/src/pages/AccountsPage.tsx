@@ -29,6 +29,7 @@ import {
   THead,
 } from '../components/ui/Table';
 import { ApiError } from '../lib/api';
+import { useAuth } from '../lib/auth';
 import { formatInteger } from '../lib/format';
 import { useDebounced } from '../lib/hooks';
 import { useAccounts, useCreateAccount, useCurrencies } from '../lib/queries';
@@ -179,6 +180,7 @@ function NewAccountDialog({ open, onClose }: { open: boolean; onClose: () => voi
 
 export default function AccountsPage() {
   const navigate = useNavigate();
+  const canWrite = useAuth().can('accounts:write');
   const [search, setSearch] = useState('');
   const [type, setType] = useState('');
   const [status, setStatus] = useState('');
@@ -210,13 +212,15 @@ export default function AccountsPage() {
             : 'Chart of accounts'
         }
         actions={
-          <Button
-            variant="primary"
-            icon={<Plus className="h-3.5 w-3.5" strokeWidth={2.4} />}
-            onClick={() => setDialogOpen(true)}
-          >
-            New account
-          </Button>
+          canWrite && (
+            <Button
+              variant="primary"
+              icon={<Plus className="h-3.5 w-3.5" strokeWidth={2.4} />}
+              onClick={() => setDialogOpen(true)}
+            >
+              New account
+            </Button>
+          )
         }
       />
 
@@ -302,11 +306,17 @@ export default function AccountsPage() {
           ) : query.data && query.data.items.length === 0 ? (
             <EmptyState
               title="No accounts match these filters"
-              description="Adjust the filters, or create the first account in this chart."
+              description={
+                canWrite
+                  ? 'Adjust the filters, or create the first account in this chart.'
+                  : 'Adjust the filters. Accounts are created by finance users.'
+              }
               action={
-                <Button variant="primary" size="sm" onClick={() => setDialogOpen(true)}>
-                  New account
-                </Button>
+                canWrite ? (
+                  <Button variant="primary" size="sm" onClick={() => setDialogOpen(true)}>
+                    New account
+                  </Button>
+                ) : undefined
               }
             />
           ) : (

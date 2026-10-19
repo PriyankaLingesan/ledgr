@@ -16,9 +16,9 @@ import pytest
 import sqlalchemy as sa
 
 from app.core.errors import AlreadyReversed, NotFound
-from app.db.session import SessionLocal
 from app.models.enums import AccountType, EntryDirection
-from app.services import idempotency, investigation, posting
+from app.services import investigation, posting
+from tests.conftest import new_session
 
 pytestmark = pytest.mark.concurrency
 
@@ -135,7 +135,7 @@ def test_concurrent_corrections_of_the_same_transaction_produce_exactly_one(db, 
 
     def worker(_):
         barrier.wait(timeout=10)
-        session = SessionLocal()
+        session = new_session()
         try:
             investigation.correct_transaction(
                 session,
@@ -166,9 +166,7 @@ def test_concurrent_corrections_of_the_same_transaction_produce_exactly_one(db, 
     # is what actually guarantees this; the row lock in reverse_transaction
     # merely makes the race rare).
     reversal_count = db.execute(
-        sa.text(
-            "SELECT count(*) FROM transactions WHERE reverses_transaction_id = :id"
-        ),
+        sa.text("SELECT count(*) FROM transactions WHERE reverses_transaction_id = :id"),
         {"id": original.id},
     ).scalar_one()
     assert reversal_count == 1
@@ -210,9 +208,7 @@ def test_concurrent_correction_requests_via_http_with_the_same_key(client, cash_
     # Every request that reaches a final answer must agree on which
     # corrected transaction won - no caller can ever see two different ids
     # for the same key.
-    ok_bodies = {
-        body["corrected_id"] for status, body in results if status == 201
-    }
+    ok_bodies = {body["corrected_id"] for status, body in results if status == 201}
     assert len(ok_bodies) == 1
     assert all(s in (201, 409) for s in statuses)
 
@@ -278,9 +274,7 @@ def test_failed_correction_leaves_the_original_untouched(db, cash_and_revenue):
 
     # No orphan reversal was left behind either.
     reversal_count = db.execute(
-        sa.text(
-            "SELECT count(*) FROM transactions WHERE reverses_transaction_id = :id"
-        ),
+        sa.text("SELECT count(*) FROM transactions WHERE reverses_transaction_id = :id"),
         {"id": original.id},
     ).scalar_one()
     assert reversal_count == 0
@@ -401,5 +395,7 @@ def test_correction_linkage_is_visible_end_to_end(client, cash_and_revenue):
     assert original_lineage["reversed_by"]["id"] == correction["reversal_id"]
     assert original_lineage["corrected_by"]["id"] == correction["corrected_id"]
 
-    corrected_lineage = client.get(f"/api/v1/transactions/{correction['corrected_id']}/lineage").json()
+    corrected_lineage = client.get(
+        f"/api/v1/transactions/{correction['corrected_id']}/lineage"
+    ).json()
     assert corrected_lineage["corrects"]["id"] == original["id"]

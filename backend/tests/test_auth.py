@@ -18,6 +18,7 @@ from sqlalchemy import update
 from app.main import app
 from app.models.auth import ApiKey
 from app.services import auth as auth_service
+from tests.conftest import current_org_id
 
 
 @pytest.fixture
@@ -109,7 +110,9 @@ def test_authenticated_caller_can_post_a_transaction(client):
 
 
 def _post_transaction(client, description="actor check"):
-    cash = client.post("/api/v1/accounts", json=account_payload(f"AUTH.{uuid.uuid4().hex[:8]}.C")).json()
+    cash = client.post(
+        "/api/v1/accounts", json=account_payload(f"AUTH.{uuid.uuid4().hex[:8]}.C")
+    ).json()
     revenue = client.post(
         "/api/v1/accounts", json=account_payload(f"AUTH.{uuid.uuid4().hex[:8]}.R", "REVENUE")
     ).json()
@@ -153,7 +156,9 @@ def test_recorded_actor_is_the_authenticated_identity_not_the_x_actor_header(cli
 
 def test_two_different_keys_produce_two_different_recorded_actors(db, api_key):
     # `api_key` (the fixture) is "test-client"; mint a second, distinct identity.
-    _, other_raw_key = auth_service.create_api_key(db, label="ops-console")
+    _, other_raw_key = auth_service.create_api_key(
+        db, label="ops-console", organization_id=current_org_id()
+    )
     db.commit()
 
     with TestClient(app) as other_client:
@@ -198,19 +203,43 @@ def test_authenticate_service_rejects_unknown_key(db):
 
 
 def test_create_api_key_never_persists_the_plaintext(db):
-    record, raw_key = auth_service.create_api_key(db, label="plaintext-check")
+    record, raw_key = auth_service.create_api_key(
+        db, label="plaintext-check", organization_id=current_org_id()
+    )
     assert record.key_hash != raw_key
     assert raw_key not in record.key_hash
 
 
 # --------------------------------------------------------------------------
-# reads remain open - only writes require authentication
+# every endpoint except health and the auth entry points requires a credential
+# (this superseded the earlier "reads are open" behavior, which was fine for a
+# service-to-service API but not for a multi-user financial product)
 # --------------------------------------------------------------------------
 
 
-def test_reads_do_not_require_authentication(anon_client):
-    response = anon_client.get("/api/v1/accounts")
-    assert response.status_code == 200
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/v1/accounts",
+        "/api/v1/transactions",
+        "/api/v1/ledger/entries",
+        "/api/v1/investigations",
+        "/api/v1/reconciliation/runs",
+        "/api/v1/system/audit",
+        "/api/v1/system/stats",
+        "/api/v1/system/metrics",
+        "/api/v1/dashboard",
+        "/api/v1/alerts",
+        "/api/v1/users",
+        "/api/v1/api-keys",
+        "/api/v1/transaction-drafts",
+        "/api/v1/ai/status",
+    ],
+)
+def test_reads_require_authentication(anon_client, path):
+    response = anon_client.get(path)
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "authentication_required"
 
 
 def test_health_does_not_require_authentication(anon_client):

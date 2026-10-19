@@ -288,10 +288,30 @@ def list_audit_events(
     resource_type: str | None = None,
     resource_id: str | None = None,
     event_type: str | None = None,
+    actor: str | None = None,
+    created_from: datetime | None = None,
+    created_to: datetime | None = None,
+    query: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[list[AuditEvent], int]:
     filters = []
+    if actor:
+        filters.append(AuditEvent.actor == actor)
+    if created_from is not None:
+        filters.append(AuditEvent.created_at >= created_from)
+    if created_to is not None:
+        filters.append(AuditEvent.created_at <= created_to)
+    if query:
+        pattern = f"%{query.strip()}%"
+        filters.append(
+            or_(
+                AuditEvent.event_type.ilike(pattern),
+                AuditEvent.actor.ilike(pattern),
+                AuditEvent.resource_id.ilike(pattern),
+                AuditEvent.request_id.ilike(pattern),
+            )
+        )
     if resource_type:
         filters.append(AuditEvent.resource_type == resource_type)
     if resource_id:
@@ -312,3 +332,13 @@ def list_audit_events(
         .all()
     )
     return list(rows), int(total)
+
+
+def audit_event_types(db: Session) -> list[str]:
+    """Every event type that actually occurs in the audit trail."""
+    return [
+        row[0]
+        for row in db.execute(
+            select(AuditEvent.event_type).distinct().order_by(AuditEvent.event_type)
+        ).all()
+    ]

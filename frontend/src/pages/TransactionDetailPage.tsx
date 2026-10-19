@@ -12,6 +12,7 @@ import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { ExplainTransactionPanel } from '../components/ai/ExplainTransactionPanel';
+import { RelatedRecordsPanel } from '../components/investigation/RelatedRecordsPanel';
 import { TransactionLineagePanel } from '../components/investigation/TransactionLineagePanel';
 import { PageHeader } from '../components/layout/AppShell';
 import {
@@ -36,6 +37,7 @@ import {
 } from '../components/ui/primitives';
 import { ErrorState, Table, TableScroller, THead } from '../components/ui/Table';
 import { ApiError } from '../lib/api';
+import { useAuth } from '../lib/auth';
 import { cn } from '../lib/cn';
 import { exponentFor, formatDateTime, formatInteger, parseAmountToMinor } from '../lib/format';
 import {
@@ -387,6 +389,7 @@ export default function TransactionDetailPage() {
   const { transactionId } = useParams();
   const [reverseOpen, setReverseOpen] = useState(false);
   const [correctOpen, setCorrectOpen] = useState(false);
+  const { can } = useAuth();
   const query = useTransaction(transactionId);
   const audit = useAuditEvents({ resource_id: transactionId, limit: 20 }, Boolean(transactionId));
 
@@ -407,7 +410,7 @@ export default function TransactionDetailPage() {
   const debits = transaction?.entries.filter((entry) => entry.direction === 'DEBIT') ?? [];
   const credits = transaction?.entries.filter((entry) => entry.direction === 'CREDIT') ?? [];
   const canReverse =
-    transaction?.status === 'POSTED' && transaction.kind === 'STANDARD';
+    can('transactions:post') && transaction?.status === 'POSTED' && transaction.kind === 'STANDARD';
 
   return (
     <>
@@ -507,6 +510,8 @@ export default function TransactionDetailPage() {
             <ExplainTransactionPanel transactionId={transaction.id} />
 
             <TransactionLineagePanel transactionId={transaction.id} />
+
+            <RelatedRecordsPanel transactionId={transaction.id} />
 
             <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
               <Panel className="overflow-hidden xl:col-span-2">

@@ -23,6 +23,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.errors import AlreadyReversed, NotFound, NotReversible
+from app.db.tenancy import require_organization
 from app.models.account import Account, AccountBalance
 from app.models.enums import EntryDirection, NormalBalance, TransactionKind, TransactionStatus
 from app.models.ledger_entry import LedgerEntry
@@ -278,6 +279,10 @@ def duplicate_candidates(
     This is a prompt to look closer, never a verdict - it is deliberately
     reported as "requires investigation", and the operator decides.
     """
+    # Core table aliases are NOT covered by the ORM's automatic tenant scoping
+    # (see app.db.tenancy), so the organization filter is applied explicitly -
+    # on both sides of the self-join.
+    organization_id = require_organization(db)
     a = LedgerEntry.__table__.alias("a")
     b = LedgerEntry.__table__.alias("b")
 
@@ -285,6 +290,8 @@ def duplicate_candidates(
         select(a.c.id, b.c.id)
         .select_from(a.join(b, a.c.account_id == b.c.account_id))
         .where(
+            a.c.organization_id == organization_id,
+            b.c.organization_id == organization_id,
             a.c.id < b.c.id,
             a.c.transaction_id != b.c.transaction_id,
             a.c.amount_minor == b.c.amount_minor,
@@ -399,7 +406,12 @@ def integrity_checklist(db: Session) -> list[IntegrityCheck]:
 
     Reverser = Transaction.__table__.alias("reverser")
     no_reverser_points_back = (
-        select(Reverser.c.id).where(Reverser.c.reverses_transaction_id == Transaction.id).exists()
+        select(Reverser.c.id)
+        .where(
+            Reverser.c.reverses_transaction_id == Transaction.id,
+            Reverser.c.organization_id == Transaction.organization_id,
+        )
+        .exists()
     )
     bad_reversals = db.execute(
         select(Transaction.id)

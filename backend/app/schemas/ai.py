@@ -101,3 +101,49 @@ class LedgerBriefOut(BaseModel):
     is_ai_generated: bool
     summary: str
     stats: LedgerBriefStatsOut
+
+
+# --- investigation copilot ---------------------------------------------------
+
+
+class CopilotRequest(BaseModel):
+    task: str = Field(
+        description="SUMMARIZE | MISSING_EVIDENCE | NEXT_STEPS | DRAFT_RESOLUTION | DRAFT_REPORT"
+    )
+
+
+class CopilotFactOut(BaseModel):
+    statement: str
+    source: str
+
+
+class CopilotHypothesisOut(BaseModel):
+    statement: str
+    basis: str | None = None
+
+
+class CopilotSourceOut(BaseModel):
+    id: str
+    label: str
+    link: str | None
+
+
+class CopilotOut(BaseModel):
+    """A *draft for review*. Verified facts each cite a source that really was in
+    the case data; anything the model could not ground is a hypothesis."""
+
+    task: str
+    summary: str
+    verified_facts: list[CopilotFactOut]
+    hypotheses: list[CopilotHypothesisOut]
+    missing_evidence: list[str]
+    suggested_next_steps: list[str]
+    document: str | None
+    evidence_sufficient: bool
+    sources: list[CopilotSourceOut]
+    ungrounded_claims_moved: int
+    requires_review: bool = True
+    disclaimer: str = (
+        "AI-generated draft. Verify against the linked records before relying on it; "
+        "it has not changed anything in the ledger, the case or the reconciliation."
+    )

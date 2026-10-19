@@ -1,15 +1,56 @@
-# LEDGR
+# LEDGR — Financial Ledger & Reconciliation Platform
 
-A double-entry financial ledger service and operations console.
+A multi-tenant, double-entry financial ledger and the operations product around it:
+accounts and organizations, role-based access, maker-checker approvals, account statements,
+reconciliation and investigation workspaces, an append-only audit log, deterministic alerts,
+system health, and an optional, read-only AI copilot.
 
 Money is recorded as balanced sets of debit and credit entries. Ledger entries are
 append-only, account balances are **derived** from those entries rather than stored as a
 mutable running total, posting is atomic, writes are idempotent, and corrections are made
-by posting reversals — never by editing history.
+by posting reversals — never by editing history. Each organization's data is isolated from
+every other's.
+
+> A portfolio-grade reference implementation using **synthetic data**. It is not certified,
+> audited or production-ready financial infrastructure — see
+> [known limitations](docs/OPERATIONS.md#known-limitations).
 
 ```
 FastAPI + SQLAlchemy 2.0  ·  PostgreSQL 16  ·  React + TypeScript + Vite  ·  Docker  ·  GitHub Actions
 ```
+
+---
+
+## Screenshots
+
+Captured from the running application with synthetic data (a second organization, signed in as its owner):
+
+| | |
+| --- | --- |
+| ![Dashboard](docs/screenshots/dashboard.jpg) | ![Reconciliation workspace](docs/screenshots/reconciliation.jpg) |
+| *Dashboard — real figures, stated windows, no fake zeros* | *Reconciliation — matched / mismatched / missing / ambiguous* |
+| ![Exception review](docs/screenshots/reconciliation-exception.jpg) | ![Investigation](docs/screenshots/investigation.jpg) |
+| *Ambiguous exception: nothing chosen; suggestions are for review* | *Investigation: append-only notes, evidence, AI panel* |
+| ![Approvals](docs/screenshots/approvals.jpg) | ![Audit log](docs/screenshots/audit-log.jpg) |
+| *Maker-checker approval* | *Audit log (filterable, append-only)* |
+
+## What is implemented
+
+| Area | Status |
+| --- | --- |
+| Double-entry ledger, atomic posting, idempotency, locking, reversals/corrections, immutability triggers | Implemented, tested against real PostgreSQL |
+| Signup / login / logout, httpOnly cookie sessions + CSRF, server-side revocable sessions, lockout, rate limiting | Implemented, tested |
+| Organizations, OWNER / ADMIN / FINANCE / OPERATIONS / AUDITOR roles, backend-enforced permissions, no privilege escalation | Implemented, tested |
+| Tenant isolation (automatic scoping + composite foreign keys + per-organization uniqueness) | Implemented; probed from a second organization in `tests/test_tenant_isolation.py` |
+| API keys (scoped, hashed, revocable) for integrations | Implemented |
+| Maker-checker approvals, organization approval threshold | Implemented, incl. concurrency and failure-injection tests |
+| Dashboard, account statements, transaction search/export (CSV), lineage and related records | Implemented |
+| Reconciliation workspace: CSV import with mapping + preview, deterministic matching, ambiguity preserved, suggestions, recorded decisions | Implemented |
+| Investigation centre: workflow, priority, append-only notes, evidence, downloadable report | Implemented |
+| Audit log UI, deterministic alerts, operations inbox, liveness/readiness/health | Implemented |
+| AI copilot (Gemini/Anthropic/OpenAI): cited drafts, hypotheses separated, no actions | Implemented and tested with a scripted provider; **no live model call is part of the automated tests** |
+| **Meridian Commerce**: a fictional Indian trading company with six months of history, bank statements, exceptions, cases, approvals and a 12-exercise learning guide | Implemented; see [`docs/MERIDIAN.md`](docs/MERIDIAN.md) |
+| Row-level security, MFA/SSO, email verification, webhooks, period-end close, multi-org membership | **Not implemented** |
 
 ---
 
@@ -35,6 +76,7 @@ built the way financial infrastructure actually is:
 | Retries | `Idempotency-Key` claims are arbitrated by a primary-key insert, not application logic |
 | Corrections | Reversals post a mirrored compensating transaction; the original is preserved |
 | Audit | Entry → transaction → accounts → request id → actor, all traceable |
+| Tenancy | Every row belongs to one organization; cross-organization references are rejected by PostgreSQL |
 
 ---
 
@@ -43,18 +85,50 @@ built the way financial infrastructure actually is:
 ### With Docker (everything)
 
 ```bash
-docker compose up --build
+docker compose up -d --build
 ```
 
-This starts PostgreSQL, applies migrations, seeds a realistic chart of accounts and ~150
-transactions, then serves:
+This starts PostgreSQL, applies migrations (see [Migrations](#migrations)), seeds a synthetic
+**"LEDGR Demo Company"** organization (22 accounts, ~190 transactions), then serves:
 
 | Service | URL |
 | --- | --- |
-| Operations console | http://localhost:8080 |
+| Operations console | http://localhost:8080 (set `WEB_PORT` and `CORS_ORIGINS` to use another port) |
 | API | http://localhost:8000/api/v1 |
 | OpenAPI docs | http://localhost:8000/docs |
-| PostgreSQL | `localhost:5433` (user/password/db: `ledgr`) |
+| Liveness / readiness | `/api/v1/system/live` · `/api/v1/system/ready` |
+| PostgreSQL | `localhost:5433` - published on the loopback interface only, IPv4 and IPv6 (user/password/db: `ledgr`; change them for anything beyond a local demo) |
+
+**Sign in:** either **create your own organization** on the console's *Create account* tab
+(you become its OWNER), or use the demo owner `owner@demo.ledgr.test` — its password is
+`BOOTSTRAP_ADMIN_PASSWORD` if you set one, otherwise a random one printed once in
+`docker logs ledgr-migrate`. Then follow [`docs/DEMO.md`](docs/DEMO.md), or run the automated
+walkthrough:
+
+```bash
+cd backend && python -m app.scripts.demo_e2e
+```
+
+### Learn LEDGR on a fictional company
+
+LEDGR ships a complete, **entirely synthetic** organization to operate as a finance and operations team
+would: *Meridian Commerce Pvt. Ltd.*, an invented Indian B2B trading company (INR, ~270 postings over six
+months, 68 bank-statement records, eight cases, maker-checker approvals, a twelve-exercise learning guide
+whose progress is verified against the real books). Nothing real is involved: no real company, bank,
+customer or money.
+
+```bash
+cd backend
+export DATABASE_URL=postgresql+psycopg://ledgr:ledgr@localhost:5433/ledgr
+python -m app.scripts.seed_meridian seed      # create / complete (idempotent; never touches other organizations)
+MERIDIAN_DEMO_PASSWORD='choose-10+-chars' python -m app.scripts.seed_meridian users   # local demo logins
+python -m app.scripts.seed_meridian status
+```
+
+Sign in through the normal login page as `meera.krishnan@meridian-demo.test` (owner) - the other roles,
+the approval flow, the bank-statement import and the exercises are in
+[`docs/MERIDIAN.md`](docs/MERIDIAN.md). The seed refuses to run against an unmarked organization of the
+same name, never deletes anything, and `users` refuses to run when `ENVIRONMENT=production`.
 
 ### Local development
 
@@ -87,14 +161,37 @@ npm run dev            # http://localhost:5173, proxies /api to :8000
 
 ```bash
 cd backend
-pytest -q                       # full suite
+pytest -q                       # full backend suite, against real PostgreSQL
 pytest -m concurrency -q        # only the concurrent-session tests
+ruff check app tests && ruff format --check app tests
+cd ../frontend
+npm run typecheck && npm test && npm run build
 ```
 
-Tests run against real PostgreSQL in a `ledgr_test` database that the harness creates.
-They deliberately do **not** use SQLite: row locks, native enums and the immutability
-triggers do not exist there, so a green SQLite suite would prove nothing about the system
-that actually ships.
+Backend tests run against real PostgreSQL in a `ledgr_test` database that the harness creates
+and rebuilds through Alembic. They deliberately do **not** use SQLite: row locks, native enums,
+composite foreign keys and the immutability triggers do not exist there, so a green SQLite suite
+would prove nothing about the system that ships. Test counts are whatever the commands above
+report on your machine; this README does not hard-code them.
+
+### Migrations
+
+```bash
+cd backend
+alembic upgrade head      # apply
+alembic downgrade -1      # step back one
+```
+
+`0008_multi_tenancy` adds `organization_id` to the ledger tables **without deleting data**: every
+existing row is assigned to the oldest existing organization (or a "Legacy organization" if there
+was data but none), and the oldest ADMIN of each organization becomes its OWNER. Downgrade removes the tenant columns but fails — rather than merge
+data — if two organizations now share an account code or transaction reference. See the
+migration's docstring.
+
+### Environment variables
+
+Full table in [`docs/OPERATIONS.md`](docs/OPERATIONS.md#configuration); placeholders in
+[`.env.example`](.env.example). Never commit real secrets.
 
 ---
 
@@ -118,7 +215,9 @@ Python still cannot corrupt the ledger.
 | I10 | One idempotency key yields at most one transaction | `INSERT … ON CONFLICT DO NOTHING` on the PK |
 | I11 | A transaction is reversed at most once | `UNIQUE (reverses_transaction_id)` |
 | I12 | Corrections are new compensating transactions, never edits | reversal service + I5/I6 |
-| I13 | Σ debits = Σ credits across the whole ledger, per currency | verified by `/system/stats` and `/system/integrity` |
+| I13 | Σ debits = Σ credits across each organization's ledger, per currency | verified by `/system/stats` and `/system/integrity` |
+| I14 | A ledger entry, balance row, reconciliation result or case can only reference records of its own organization | composite foreign keys in PostgreSQL (application-layer scoping is a second line) |
+| I15 | Account code, transaction reference, idempotency key and external record id are unique per organization | per-organization unique constraints |
 
 Full detail, including which test covers each: [`docs/INVARIANTS.md`](docs/INVARIANTS.md).
 
@@ -127,21 +226,24 @@ Full detail, including which test covers each: [`docs/INVARIANTS.md`](docs/INVAR
 ## Architecture
 
 ```
+  Browser ── httpOnly session cookie + CSRF header ──┐
+  Scripts ── Authorization: Bearer <API key> ────────┤
+                                                     ▼
                     ┌────────────────────────────────────────────┐
-  Browser  ────────▶│  React console (Vite, TS, Tailwind)        │
-                    └───────────────────┬────────────────────────┘
-                                        │ REST + JSON
-                    ┌───────────────────▼────────────────────────┐
                     │  FastAPI                                    │
-                    │   api/v1     thin routers, validation       │
+                    │   api/v1     thin routers, require(PERM)    │
+                    │   deps       principal → organization       │
                     │   services   ALL invariants + unit of work  │
-                    │   models     SQLAlchemy 2.0 ORM             │
+                    │   ai         read-only copilot (no tools)   │
+                    │   db/tenancy automatic per-org scoping      │
                     └───────────────────┬────────────────────────┘
                                         │ psycopg 3
                     ┌───────────────────▼────────────────────────┐
                     │  PostgreSQL 16                              │
-                    │   constraints · row locks · triggers        │
+                    │   constraints · composite FKs · row locks   │
+                    │   immutability triggers · per-org uniques   │
                     └─────────────────────────────────────────────┘
+        optional: Gemini / Anthropic / OpenAI  ◀── JSON in, JSON out, never writes
 ```
 
 A modular monolith, deliberately. Nothing here is independently scalable, independently
@@ -162,6 +264,10 @@ ledger_entries ──N:1──▶ transactions ──0:1──▶ transactions  
                               │
                     idempotency_keys        audit_events
 ```
+
+Every table in the diagram above also carries an `organization_id` (see
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md#tenant-isolation)); entries, balances, results and cases
+reference only rows of their own organization via composite foreign keys.
 
 Money is stored as `BIGINT` **minor units** (cents, paise, yen) plus an ISO-4217 currency
 code — never floats, never a decimal type whose rounding depends on driver settings.
@@ -192,7 +298,21 @@ Base path `/api/v1`. Interactive docs at `/docs`.
 | `GET` | `/system/integrity` | Re-derives every balance and compares with the cache |
 | `GET` | `/system/audit` | Append-only audit log |
 | `GET` | `/system/currencies` | Supported currencies and minor-unit exponents |
-| `GET` | `/system/health` | Liveness + database reachability |
+| `GET` | `/system/health` | Liveness + database reachability (public) |
+| `GET` | `/system/health/detail` | Checked-now component status: DB latency, schema revision, integrity, reconciliation, recent errors |
+| `GET` | `/accounts/{id}/statement` | Entries with a DB-computed running balance; date/side/text filters |
+| `POST` | `/auth/register`, `/auth/login`, `/auth/logout` · `GET` `/auth/me`, `/auth/config` | Signup (new organization), sessions (opaque, server-side, revocable) |
+| `POST` | `/transaction-drafts` · `…/{id}/submit` · `…/approve` · `…/reject` | Maker-checker; approval uses the normal posting engine |
+| `GET` | `/dashboard`, `/alerts`, `/onboarding` | Real-data dashboard, deterministic alerts, setup checklist |
+| `*` | `/users`, `/api-keys`, `/organization` | Administration (ADMIN only) |
+
+Every endpoint except `/system/health`, `/system/live`, `/system/ready`, `GET /auth/config`,
+`POST /auth/register` and `POST /auth/login` requires credentials: either
+`Authorization: Bearer <session token or API key>` (scripts and integrations) or the httpOnly
+session cookie plus an `X-CSRF-Token` header on writes (the browser console). Each endpoint
+declares the permission it needs; the full role matrix is in
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md). A test enumerates every published route and fails
+if one is reachable without credentials.
 
 ### Posting a transaction
 
@@ -200,7 +320,7 @@ Base path `/api/v1`. Interactive docs at `/docs`.
 curl -X POST http://localhost:8000/api/v1/transactions \
   -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: 7f1c2c9a-6c5e-4f4a-9a1e-5d2b0a2f9c31' \
-  -H 'X-Actor: ops.priyanka' \
+  -H 'Authorization: Bearer ledgr_...' \   # an API key with a FINANCE/ADMIN role, or a session token
   -d '{
         "description": "Processor settlement",
         "currency": "USD",
@@ -238,21 +358,26 @@ Clients branch on `code`, never on prose.
 
 ## The console
 
-Seven screens, all fed by real API data — there are no placeholder metrics anywhere.
+Every screen is fed by real API data — there are no placeholder metrics anywhere — and the
+navigation shows only what the signed-in role may use (the server enforces it regardless).
 
-- **Dashboard** — account/transaction/entry counts, per-currency trial balance, integrity
-  check, 14-day posting volume, recent activity
-- **Accounts** — filterable chart of accounts with derived balances
-- **Account detail** — derived vs cached balance, full statement with per-entry balance
-  effect, related transactions
-- **Transactions** — the register, filterable by status, kind, currency and free text
-- **Transaction detail** — the audit view: debits and credits side by side, independently
-  totalled, with the balance equality asserted explicitly and the audit trail attached
-- **New transaction** — multi-leg builder with live debit/credit totals, pre-flight checks
-  mirroring the server's rules, and a visible idempotency key
-- **Ledger explorer** — every entry, in classic debit/credit column form, with an auditor's
-  filters
-- **Audit log** — who did what, under which request id
+- **Dashboard** — accounts, 24h activity, approvals waiting, open investigations, the latest
+  reconciliation counts, ledger-integrity status, active alerts, recent audit activity
+- **Accounts / statements** — chart of accounts; per-account statement with running balance,
+  filters and CSV export of the visible page
+- **Transactions & New transaction** — register and builder; finance users post directly,
+  or *Submit for approval* (required above the organization's threshold)
+- **Approvals** — the maker-checker queue: approve (posts via the normal engine) or reject
+  with a reason; you can never approve your own draft
+- **Investigations** — priority, evidence (balance change, lineage, integrity), the
+  reconciliation exception it came from, and a real audit trail
+- **Reconciliation workspace** — sources, runs, matched / mismatched / missing / ambiguous
+  counts, exception drill-down; never modifies the ledger, ambiguous stays ambiguous
+- **Alerts · Audit log · System health** — deterministic rules, filterable append-only
+  events, live component checks
+- **Administration** — users & roles, API keys (shown once, revocable), organization policy
+- **Flight Recorder · Ledger explorer · LEDGR Intelligence** — as before (AI is read-only and
+  proposal-only; it makes no financial decisions)
 
 Design system, information architecture and the debit/credit visual language:
 [`docs/UI.md`](docs/UI.md).
@@ -269,8 +394,9 @@ backend/
     db/           engine, session factory, unit-of-work helpers
     models/       SQLAlchemy models + domain enums
     schemas/      Pydantic request/response models + explicit serializers
-    services/     posting engine, balances, idempotency, accounts, queries, audit
-    scripts/      seed data
+    services/     posting engine, balances, idempotency, accounts, auth, users, drafts,
+                  reconciliation, casework, alerts, statements, ai/ (copilot, tools, provider)
+    scripts/      demo seed, API-key CLI, end-to-end demo
   alembic/        migrations, including the immutability triggers
   tests/          invariant, immutability, idempotency, balance, reversal,
                   concurrency and API suites
@@ -278,8 +404,8 @@ frontend/
   src/
     components/   layout, UI primitives, ledger display atoms
     lib/          API client, types, money/date formatting, React Query hooks
-    pages/        the seven screens
-docs/             architecture, invariants, UI, deployment
+    pages/        console screens (dashboard, approvals, reconciliation, investigations, admin...)
+docs/             architecture, invariants, operations, AI, demo, UI, deployment
 ```
 
 ---
@@ -323,6 +449,17 @@ cache tier. Adding them would be architecture as decoration.
 Both images are production-shaped: multi-stage builds, non-root runtime users, health
 checks. The intended AWS target is ECS Fargate behind an ALB with RDS PostgreSQL and
 CloudWatch Logs — see [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
+
+### Deployment prerequisites
+
+* PostgreSQL 16 and `DATABASE_URL`; migrations run before each release (`alembic upgrade head`).
+* HTTPS, with `CORS_ORIGINS` listing the console's exact origin(s). If the console and API are on
+  different sites (e.g. two `onrender.com` subdomains) set `SESSION_COOKIE_SAMESITE=none` and
+  `SESSION_COOKIE_SECURE=true`; same-site deployments keep the `lax` default. `render.yaml` does this.
+* Decide on signup: `ALLOW_SIGNUP=false`, or `SIGNUP_TOKEN` as an invite code. Never expose an open
+  signup on a public URL you did not mean to.
+* Edge rate limiting: the built-in limiter is per process (see limitations).
+* Optional AI: `AI_PROVIDER`, `AI_MODEL`, `AI_API_KEY` as secrets.
 
 ## CI
 

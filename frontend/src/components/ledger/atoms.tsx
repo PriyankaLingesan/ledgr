@@ -77,7 +77,7 @@ export function Amount({
             : 'text-ink';
 
   return (
-    <span className={cn('num tabular-nums', toneClass, className)}>
+    <span className={cn('num whitespace-nowrap tabular-nums', toneClass, className)}>
       {formatMoney(money, { registry: currencies, showCurrency, signed })}
     </span>
   );

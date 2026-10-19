@@ -30,6 +30,7 @@ import {
   Spinner,
 } from '../components/ui/primitives';
 import { ErrorState } from '../components/ui/Table';
+import { useAuth } from '../lib/auth';
 import { formatDateTime } from '../lib/format';
 import {
   useAccountBalance,
@@ -75,6 +76,7 @@ export default function FlightRecorderPage() {
   );
 
   const createCase = useCreateInvestigation();
+  const { can } = useAuth();
   const selectedAccount = accounts.data?.items.find((a) => a.id === accountId);
 
   const investigateDiscrepancy = () => {
@@ -144,7 +146,7 @@ export default function FlightRecorderPage() {
               </Button>
             )}
 
-            {accountId && (
+            {accountId && can('investigations:write') && (
               <Button
                 icon={
                   createCase.isPending ? (

@@ -8,6 +8,7 @@ from app.core.errors import IdempotencyKeyReused, IdempotentRequestInFlight
 from app.models.enums import AccountType
 from app.schemas.transaction import TransactionCreate
 from app.services import idempotency
+from tests.conftest import current_org_id
 
 
 @pytest.fixture
@@ -60,6 +61,7 @@ def test_claim_of_a_brand_new_key_succeeds_immediately():
     """
     key = str(uuid.uuid4())
     result = idempotency.claim(
+        organization_id=current_org_id(),
         scope=idempotency.SCOPE_POST_TRANSACTION,
         key=key,
         request_hash=idempotency.fingerprint({"probe": True}),
@@ -188,6 +190,7 @@ def test_in_flight_duplicate_is_rejected_rather_than_queued(client, accounts):
 
     # Simulate the first request still running.
     idempotency.claim(
+        organization_id=current_org_id(),
         scope=idempotency.SCOPE_POST_TRANSACTION,
         key=key,
         request_hash=canonical_hash(body),
@@ -195,6 +198,7 @@ def test_in_flight_duplicate_is_rejected_rather_than_queued(client, accounts):
 
     with pytest.raises(IdempotentRequestInFlight):
         idempotency.claim(
+            organization_id=current_org_id(),
             scope=idempotency.SCOPE_POST_TRANSACTION,
             key=key,
             request_hash=canonical_hash(body),
@@ -233,12 +237,14 @@ def test_reused_key_detection_is_hash_based(client, accounts):
     body = payload(cash_id, revenue_id)
 
     idempotency.claim(
+        organization_id=current_org_id(),
         scope=idempotency.SCOPE_POST_TRANSACTION,
         key=key,
         request_hash=idempotency.fingerprint(body),
     )
     with pytest.raises(IdempotencyKeyReused):
         idempotency.claim(
+            organization_id=current_org_id(),
             scope=idempotency.SCOPE_POST_TRANSACTION,
             key=key,
             request_hash=idempotency.fingerprint({"different": True}),

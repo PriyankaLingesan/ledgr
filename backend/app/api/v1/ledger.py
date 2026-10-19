@@ -8,10 +8,11 @@ database triggers that back invariant I5.
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
-from app.api.deps import DbSession, PaginationParams
+from app.api.deps import DbSession, PaginationParams, require
 from app.core.errors import NotFound
+from app.core.permissions import Permission
 from app.models.enums import EntryDirection
 from app.models.ledger_entry import LedgerEntry
 from app.schemas.common import Page
@@ -19,7 +20,11 @@ from app.schemas.serialize import ledger_entry_out
 from app.schemas.transaction import LedgerEntryOut
 from app.services import queries
 
-router = APIRouter(prefix="/ledger", tags=["ledger"])
+router = APIRouter(
+    prefix="/ledger",
+    tags=["ledger"],
+    dependencies=[Depends(require(Permission.TRANSACTIONS_READ))],
+)
 
 
 @router.get("/entries", response_model=Page[LedgerEntryOut])

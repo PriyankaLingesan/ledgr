@@ -60,13 +60,14 @@ class Replay:
 
 def claim(
     *,
+    organization_id: uuid.UUID,
     scope: str,
     key: str,
     request_hash: str,
     request_id: str | None = None,
 ) -> Replay | None:
     """Claim a key. Returns a `Replay` if this request was already served."""
-    with session_scope() as session:
+    with session_scope(organization_id) as session:
         # `RETURNING`, not `rowcount`: whether `ON CONFLICT DO NOTHING` actually
         # inserted a row is unreliable to read off `CursorResult.rowcount` with
         # psycopg (it can report -1 for this statement shape even on a genuine
@@ -76,19 +77,20 @@ def claim(
         inserted = session.execute(
             pg_insert(IdempotencyRecord)
             .values(
+                organization_id=organization_id,
                 scope=scope,
                 key=key,
                 request_hash=request_hash,
                 status=IdempotencyStatus.IN_PROGRESS,
                 request_id=request_id,
             )
-            .on_conflict_do_nothing(index_elements=["scope", "key"])
+            .on_conflict_do_nothing(index_elements=["organization_id", "scope", "key"])
             .returning(IdempotencyRecord.key)
         ).first()
         if inserted is not None:
             return None  # claim acquired, caller proceeds
 
-    with session_scope() as session:
+    with session_scope(organization_id) as session:
         record = session.execute(
             select(IdempotencyRecord).where(
                 IdempotencyRecord.scope == scope, IdempotencyRecord.key == key
@@ -115,13 +117,14 @@ def claim(
 
 def complete(
     *,
+    organization_id: uuid.UUID,
     scope: str,
     key: str,
     status_code: int,
     body: dict[str, Any],
     transaction_id: uuid.UUID | None = None,
 ) -> None:
-    with session_scope() as session:
+    with session_scope(organization_id) as session:
         record = session.execute(
             select(IdempotencyRecord).where(
                 IdempotencyRecord.scope == scope, IdempotencyRecord.key == key
@@ -136,9 +139,9 @@ def complete(
         record.completed_at = datetime.now(UTC)
 
 
-def release(*, scope: str, key: str) -> None:
+def release(*, organization_id: uuid.UUID, scope: str, key: str) -> None:
     """Free a claim whose work failed, so the caller may legitimately retry."""
-    with session_scope() as session:
+    with session_scope(organization_id) as session:
         session.execute(
             delete(IdempotencyRecord).where(
                 IdempotencyRecord.scope == scope,

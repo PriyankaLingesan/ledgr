@@ -71,9 +71,7 @@ def test_list_cases_filters_by_status(db):
     resolved_case = investigation_cases.create_case(db, title="Resolved one", issue_summary="y")
     investigation_cases.resolve_case(db, resolved_case.id, resolution_note="handled")
 
-    open_items, open_total = investigation_cases.list_cases(
-        db, status=InvestigationStatus.OPEN
-    )
+    open_items, open_total = investigation_cases.list_cases(db, status=InvestigationStatus.OPEN)
     assert open_total == 1
     assert open_items[0].id == open_case.id
 
@@ -282,7 +280,9 @@ def test_case_lifecycle_via_api(client, cash_and_revenue):
     assert evidence.status_code == 200
     assert evidence.json()["case"]["id"] == case_id
 
-    moved = client.patch(f"/api/v1/investigations/{case_id}/status", json={"status": "INVESTIGATING"})
+    moved = client.patch(
+        f"/api/v1/investigations/{case_id}/status", json={"status": "INVESTIGATING"}
+    )
     assert moved.status_code == 200
     assert moved.json()["status"] == "INVESTIGATING"
 
@@ -306,7 +306,5 @@ def test_invalid_status_transition_via_api_returns_422(client):
     ).json()
     client.post(f"/api/v1/investigations/{created['id']}/resolve", json={"resolution_note": "done"})
 
-    resp = client.patch(
-        f"/api/v1/investigations/{created['id']}/status", json={"status": "OPEN"}
-    )
+    resp = client.patch(f"/api/v1/investigations/{created['id']}/status", json={"status": "OPEN"})
     assert resp.status_code == 422

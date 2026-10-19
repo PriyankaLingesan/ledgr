@@ -14,13 +14,19 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.errors import NotFound, ValidationFailed
-from app.models.enums import InvestigationSource, InvestigationStatus
+from app.models.account import Account
+from app.models.audit import AuditEvent
+from app.models.enums import InvestigationPriority, InvestigationSource, InvestigationStatus
 from app.models.investigation import Investigation
+from app.models.reconciliation import ReconciliationResult
+from app.models.transaction import Transaction
+from app.services import audit
 from app.services import investigation as investigation_service
+from app.services import reconciliation as reconciliation_service
 
 # What status an open case may move to next. RESOLVED -> INVESTIGATING covers
 # reopening a case that turns out not to be settled after all; nothing may
@@ -43,9 +49,7 @@ def _load(db: Session, case_id: uuid.UUID) -> Investigation:
         .where(Investigation.id == case_id)
     ).scalar_one_or_none()
     if case is None:
-        raise NotFound(
-            f"investigation case {case_id} not found", details={"case_id": str(case_id)}
-        )
+        raise NotFound(f"investigation case {case_id} not found", details={"case_id": str(case_id)})
     return case
 
 
@@ -59,8 +63,17 @@ def create_case(
     account_id: uuid.UUID | None = None,
     window_from: datetime | None = None,
     window_to: datetime | None = None,
+    priority: InvestigationPriority = InvestigationPriority.MEDIUM,
+    reconciliation_result_id: uuid.UUID | None = None,
     created_by: str = "system",
+    request_id: str | None = None,
 ) -> Investigation:
+    # Referenced records must exist *in this organization*; otherwise the database's
+    # composite foreign key would reject them with an opaque constraint error.
+    if account_id is not None and db.get(Account, account_id) is None:
+        raise NotFound(
+            f"account {account_id} does not exist", details={"account_id": str(account_id)}
+        )
     case = Investigation(
         id=uuid.uuid4(),
         case_number="",  # filled in below once `seq` is assigned
@@ -71,11 +84,27 @@ def create_case(
         account_id=account_id,
         window_from=window_from,
         window_to=window_to,
+        priority=priority,
+        reconciliation_result_id=reconciliation_result_id,
         created_by=created_by,
     )
     db.add(case)
     db.flush()  # assigns case.seq
     case.case_number = f"INV-{case.seq:04d}"
+    audit.record(
+        db,
+        event_type="investigation.created",
+        resource_type="investigation",
+        resource_id=str(case.id),
+        actor=created_by,
+        request_id=request_id,
+        payload={
+            "case_number": case.case_number,
+            "title": title,
+            "source": source.value,
+            "priority": priority.value,
+        },
+    )
     db.commit()
     return _load(db, case.id)
 
@@ -85,6 +114,8 @@ def list_cases(
     *,
     status: InvestigationStatus | None = None,
     account_id: uuid.UUID | None = None,
+    priority: InvestigationPriority | None = None,
+    query: str | None = None,
     limit: int = 20,
     offset: int = 0,
 ) -> tuple[list[Investigation], int]:
@@ -96,6 +127,15 @@ def list_cases(
     if account_id is not None:
         stmt = stmt.where(Investigation.account_id == account_id)
         count_stmt = count_stmt.where(Investigation.account_id == account_id)
+
+    if priority is not None:
+        stmt = stmt.where(Investigation.priority == priority)
+        count_stmt = count_stmt.where(Investigation.priority == priority)
+    if query:
+        pattern = f"%{query.strip()}%"
+        match = or_(Investigation.title.ilike(pattern), Investigation.case_number.ilike(pattern))
+        stmt = stmt.where(match)
+        count_stmt = count_stmt.where(match)
 
     total = db.execute(count_stmt).scalar_one()
     items = (
@@ -120,6 +160,8 @@ def update_status(
     case_id: uuid.UUID,
     *,
     status: InvestigationStatus,
+    actor: str = "system",
+    request_id: str | None = None,
 ) -> Investigation:
     case = _load(db, case_id)
     if status != case.status and status not in _VALID_TRANSITIONS.get(case.status, set()):
@@ -127,11 +169,22 @@ def update_status(
             f"cannot move a case from {case.status.value} to {status.value}",
             details={"from": case.status.value, "to": status.value},
         )
+    previous = case.status
     case.status = status
     if status is InvestigationStatus.RESOLVED:
         case.resolved_at = datetime.now(UTC)
     else:
         case.resolved_at = None
+    if status != previous:
+        audit.record(
+            db,
+            event_type="investigation.status_changed",
+            resource_type="investigation",
+            resource_id=str(case.id),
+            actor=actor,
+            request_id=request_id,
+            payload={"case_number": case.case_number, "from": previous.value, "to": status.value},
+        )
     db.commit()
     return _load(db, case.id)
 
@@ -142,13 +195,38 @@ def resolve_case(
     *,
     resolution_note: str,
     correction_transaction_id: uuid.UUID | None = None,
+    actor: str = "system",
+    request_id: str | None = None,
 ) -> Investigation:
     case = _load(db, case_id)
+    if (
+        correction_transaction_id is not None
+        and db.get(Transaction, correction_transaction_id) is None
+    ):
+        raise NotFound(
+            f"transaction {correction_transaction_id} does not exist",
+            details={"transaction_id": str(correction_transaction_id)},
+        )
     case.status = InvestigationStatus.RESOLVED
     case.resolved_at = datetime.now(UTC)
     case.resolution_note = resolution_note
     if correction_transaction_id is not None:
         case.correction_transaction_id = correction_transaction_id
+    audit.record(
+        db,
+        event_type="investigation.resolved",
+        resource_type="investigation",
+        resource_id=str(case.id),
+        actor=actor,
+        request_id=request_id,
+        payload={
+            "case_number": case.case_number,
+            "resolution_note": resolution_note,
+            "correction_transaction_id": (
+                str(correction_transaction_id) if correction_transaction_id else None
+            ),
+        },
+    )
     db.commit()
     return _load(db, case.id)
 
@@ -160,6 +238,8 @@ class CaseEvidence:
     duplicate_candidates: list[investigation_service.DuplicateGroup]
     integrity: list[investigation_service.IntegrityCheck]
     lineage: investigation_service.TransactionLineage | None
+    reconciliation_result: ReconciliationResult | None
+    audit_events: list[AuditEvent]
 
 
 def case_evidence(db: Session, case_id: uuid.UUID) -> CaseEvidence:
@@ -201,10 +281,34 @@ def case_evidence(db: Session, case_id: uuid.UUID) -> CaseEvidence:
             except NotFound:
                 lineage = None
 
+    recon_result = (
+        reconciliation_service.get_result(db, case.reconciliation_result_id)
+        if case.reconciliation_result_id
+        else None
+    )
+
+    # The case's own history: its lifecycle events, plus the ledger audit
+    # trail of the transaction that triggered it. Real audit rows only.
+    resource_ids = [str(case.id)]
+    if lineage is not None:
+        resource_ids.append(str(lineage.root.id))
+    events = (
+        db.execute(
+            select(AuditEvent)
+            .where(AuditEvent.resource_id.in_(resource_ids))
+            .order_by(AuditEvent.seq.asc())
+            .limit(100)
+        )
+        .scalars()
+        .all()
+    )
+
     return CaseEvidence(
         case=case,
         balance_change=change,
         duplicate_candidates=duplicates,
         integrity=integrity,
         lineage=lineage,
+        reconciliation_result=recon_result,
+        audit_events=list(events),
     )

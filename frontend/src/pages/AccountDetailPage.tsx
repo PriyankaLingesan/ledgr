@@ -19,6 +19,7 @@ import {
   DirectionBadge,
   TransactionStatusBadge,
 } from '../components/ledger/atoms';
+import { StatementPanel } from '../components/ledger/StatementPanel';
 import { Panel, PanelHeader, Skeleton } from '../components/ui/primitives';
 import {
   EmptyState,
@@ -61,7 +62,7 @@ function Metric({
 export default function AccountDetailPage() {
   const { accountId } = useParams();
   const navigate = useNavigate();
-  const [tab, setTab] = useState<'entries' | 'transactions'>('entries');
+  const [tab, setTab] = useState<'statement' | 'entries' | 'transactions'>('statement');
   const [offset, setOffset] = useState(0);
 
   const account = useAccount(accountId);
@@ -205,7 +206,7 @@ export default function AccountDetailPage() {
           <PanelHeader
             title={
               <div className="flex items-center gap-1">
-                {(['entries', 'transactions'] as const).map((value) => (
+                {(['statement', 'entries', 'transactions'] as const).map((value) => (
                   <button
                     key={value}
                     type="button"
@@ -220,19 +221,23 @@ export default function AccountDetailPage() {
                         : 'text-ink-3 hover:bg-surface-3 hover:text-ink',
                     )}
                   >
-                    {value === 'entries' ? 'Ledger entries' : 'Transactions'}
+                    {value === 'statement' ? 'Statement' : value === 'entries' ? 'Ledger entries' : 'Transactions'}
                   </button>
                 ))}
               </div>
             }
             description={
-              tab === 'entries'
-                ? 'Every entry that shaped this balance, newest first'
-                : 'Transactions with at least one entry against this account'
+              tab === 'statement'
+                ? 'Entries with a running balance, filterable by date, side and text'
+                : tab === 'entries'
+                  ? 'Every entry that shaped this balance, newest first'
+                  : 'Transactions with at least one entry against this account'
             }
           />
 
-          {tab === 'entries' ? (
+          {tab === 'statement' && accountId ? (
+            <StatementPanel accountId={accountId} />
+          ) : tab === 'entries' ? (
             entries.isLoading ? (
               <TableSkeleton rows={8} columns={6} />
             ) : entries.data && entries.data.items.length === 0 ? (

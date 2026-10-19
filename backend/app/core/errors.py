@@ -11,10 +11,18 @@ class LedgrError(Exception):
     status_code: int = 400
     code: str = "ledgr_error"
 
-    def __init__(self, message: str, *, details: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        details: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         super().__init__(message)
         self.message = message
         self.details = details or {}
+        # Extra response headers (e.g. Retry-After on a 429).
+        self.headers = headers or {}
 
 
 # --- invariant violations -------------------------------------------------
@@ -115,6 +123,51 @@ class InvalidCredentials(LedgrError):
 
     status_code = 401
     code = "invalid_credentials"
+
+
+class SessionExpired(LedgrError):
+    """A login session existed but is expired or was revoked (logout).
+
+    Distinct from `InvalidCredentials` so the frontend can say "your session
+    expired, sign in again" instead of "wrong credentials".
+    """
+
+    status_code = 401
+    code = "session_expired"
+
+
+# --- authorization -----------------------------------------------------------
+
+
+class PermissionDenied(LedgrError):
+    """Authenticated, but the caller's role does not allow this action."""
+
+    status_code = 403
+    code = "forbidden"
+
+
+class SelfApprovalForbidden(PermissionDenied):
+    """Maker-checker: the person who proposed a transaction cannot approve it."""
+
+    code = "self_approval_forbidden"
+
+
+class ApprovalRequired(Conflict):
+    """The organization's policy requires this transaction to go through
+    maker-checker approval rather than being posted directly."""
+
+    code = "approval_required"
+
+
+class SignupDisabled(PermissionDenied):
+    """Self-service signup is switched off on this deployment."""
+
+    code = "signup_disabled"
+
+
+class TooManyRequests(LedgrError):
+    status_code = 429
+    code = "rate_limited"
 
 
 # --- idempotency ----------------------------------------------------------

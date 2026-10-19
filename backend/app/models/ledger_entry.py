@@ -25,12 +25,13 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+from app.db.tenancy import TenantMixin
 from app.models.account import Account
 from app.models.enums import EntryDirection
 from app.models.transaction import Transaction
 
 
-class LedgerEntry(Base):
+class LedgerEntry(TenantMixin, Base):
     __tablename__ = "ledger_entries"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

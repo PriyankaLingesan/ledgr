@@ -21,10 +21,11 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
-from app.models.enums import InvestigationSource, InvestigationStatus
+from app.db.tenancy import TenantMixin
+from app.models.enums import InvestigationPriority, InvestigationSource, InvestigationStatus
 
 
-class Investigation(Base, TimestampMixin):
+class Investigation(TenantMixin, Base, TimestampMixin):
     __tablename__ = "investigations"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -53,6 +54,24 @@ class Investigation(Base, TimestampMixin):
     # description, a transaction reference) - not a foreign key, because the
     # trigger isn't always one single row.
     source_reference: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+    priority: Mapped[InvestigationPriority] = mapped_column(
+        Enum(InvestigationPriority, name="investigation_priority", native_enum=True),
+        nullable=False,
+        default=InvestigationPriority.MEDIUM,
+        server_default="MEDIUM",
+    )
+    # The reconciliation exception this case was opened from, if any - lets
+    # the case view show the external record and the amounts side by side.
+    reconciliation_result_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        # Explicit: the generated name would exceed PostgreSQL's 63-char limit.
+        ForeignKey(
+            "reconciliation_results.id",
+            name="fk_investigations_recon_result_id_reconciliation_results",
+        ),
+        nullable=True,
+    )
 
     # The account and window this case investigates. Both nullable: a
     # ledger-wide integrity case has no single account.

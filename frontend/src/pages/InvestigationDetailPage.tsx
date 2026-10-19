@@ -13,6 +13,7 @@
 import {
   CheckCircle2,
   ChevronRight,
+  Download,
   Loader2,
   Printer,
   SearchCheck,
@@ -22,26 +23,26 @@ import {
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
+import { CaseCopilot } from '../components/ai/CopilotPanel';
 import { BalanceChangePanel } from '../components/investigation/BalanceChangePanel';
+import { NotesPanel } from '../components/investigation/NotesPanel';
 import { TransactionLineagePanel } from '../components/investigation/TransactionLineagePanel';
 import { PageHeader } from '../components/layout/AppShell';
 import { AccountRef, Amount, DirectionBadge } from '../components/ledger/atoms';
+import { AuditActionBadge, CaseStatusBadge, PriorityBadge, ReconStatusBadge } from '../components/ops/atoms';
 import { Modal } from '../components/ui/Modal';
 import { Badge, Button, Field, Panel, PanelHeader, Skeleton, Textarea } from '../components/ui/primitives';
 import { EmptyState, ErrorState } from '../components/ui/Table';
+import { downloadFile } from '../lib/api';
+import { useAuth } from '../lib/auth';
 import { formatDateTime } from '../lib/format';
+import { useToast } from '../lib/toast';
 import {
   useInvestigation,
   useInvestigationEvidence,
   useResolveInvestigation,
   useUpdateInvestigationStatus,
 } from '../lib/queries';
-import type { InvestigationStatus } from '../lib/types';
-
-function CaseStatusBadge({ status }: { status: InvestigationStatus }) {
-  const tone = status === 'OPEN' ? 'warning' : status === 'INVESTIGATING' ? 'accent' : 'positive';
-  return <Badge tone={tone}>{status}</Badge>;
-}
 
 function ResolveDialog({
   caseId,
@@ -54,6 +55,7 @@ function ResolveDialog({
 }) {
   const [note, setNote] = useState('');
   const resolve = useResolveInvestigation();
+  const toast = useToast();
 
   return (
     <Modal
@@ -71,7 +73,14 @@ function ResolveDialog({
             onClick={() =>
               resolve.mutate(
                 { id: caseId, resolution_note: note.trim() },
-                { onSuccess: () => { onClose(); setNote(''); } },
+                {
+                  onSuccess: () => {
+                    toast.success('Investigation resolved');
+                    onClose();
+                    setNote('');
+                  },
+                  onError: (error) => toast.apiError(error),
+                },
               )
             }
           >
@@ -99,6 +108,17 @@ export default function InvestigationDetailPage() {
   const caseQuery = useInvestigation(caseId);
   const evidence = useInvestigationEvidence(caseId);
   const updateStatus = useUpdateInvestigationStatus();
+  const { can } = useAuth();
+  const toast = useToast();
+  const canWrite = can('investigations:write');
+  const changeStatus = (id: string, status: 'INVESTIGATING') =>
+    updateStatus.mutate(
+      { id, status },
+      {
+        onSuccess: () => toast.success('Status updated'),
+        onError: (error) => toast.apiError(error),
+      },
+    );
 
   if (caseQuery.isError) {
     return (
@@ -135,24 +155,25 @@ export default function InvestigationDetailPage() {
         actions={
           investigationCase && (
             <div className="flex flex-wrap items-center gap-2 print:hidden">
+              <PriorityBadge priority={investigationCase.priority} />
               <CaseStatusBadge status={investigationCase.status} />
-              {canStartInvestigating && (
+              {canWrite && canStartInvestigating && (
                 <Button
                   disabled={updateStatus.isPending}
-                  onClick={() => updateStatus.mutate({ id: investigationCase.id, status: 'INVESTIGATING' })}
+                  onClick={() => changeStatus(investigationCase.id, 'INVESTIGATING')}
                 >
                   Start investigating
                 </Button>
               )}
-              {canReopen && (
+              {canWrite && canReopen && (
                 <Button
                   disabled={updateStatus.isPending}
-                  onClick={() => updateStatus.mutate({ id: investigationCase.id, status: 'INVESTIGATING' })}
+                  onClick={() => changeStatus(investigationCase.id, 'INVESTIGATING')}
                 >
                   Reopen
                 </Button>
               )}
-              {canResolve && (
+              {canWrite && canResolve && (
                 <Button
                   variant="primary"
                   icon={<CheckCircle2 className="h-3.5 w-3.5" />}
@@ -161,8 +182,18 @@ export default function InvestigationDetailPage() {
                   Resolve
                 </Button>
               )}
+              <Button
+                icon={<Download className="h-3.5 w-3.5" />}
+                onClick={() =>
+                  downloadFile(`/investigations/${investigationCase.id}/report`, `${investigationCase.case_number}-evidence.md`).catch(
+                    (error) => toast.apiError(error),
+                  )
+                }
+              >
+                Download evidence
+              </Button>
               <Button icon={<Printer className="h-3.5 w-3.5" />} onClick={() => window.print()}>
-                Print evidence report
+                Print
               </Button>
             </div>
           )
@@ -238,6 +269,11 @@ export default function InvestigationDetailPage() {
               </dl>
             </Panel>
 
+            <div className="grid gap-4 xl:grid-cols-2">
+              <NotesPanel caseId={investigationCase.id} />
+              <CaseCopilot caseId={investigationCase.id} />
+            </div>
+
             {evidence.isError ? (
               <Panel>
                 <ErrorState error={evidence.error} context="the evidence" onRetry={() => evidence.refetch()} />
@@ -246,6 +282,50 @@ export default function InvestigationDetailPage() {
               <Skeleton className="h-48 w-full" />
             ) : (
               <>
+                {evidence.data.reconciliation && (
+                  <Panel>
+                    <PanelHeader
+                      title="Reconciliation evidence"
+                      description="The exception this case was opened from. Read-only - investigating never changes the ledger or this result."
+                      actions={<ReconStatusBadge status={evidence.data.reconciliation.status} />}
+                    />
+                    <div className="grid gap-px bg-border sm:grid-cols-3">
+                      <div className="bg-surface px-4 py-3">
+                        <p className="caption">Internal amount (ledger)</p>
+                        <p className="mt-1">
+                          <Amount money={evidence.data.reconciliation.internal_amount} showCurrency />
+                        </p>
+                        {evidence.data.reconciliation.internal_reference && (
+                          <p className="num mt-0.5 text-xs text-ink-3">
+                            {evidence.data.reconciliation.internal_reference}
+                          </p>
+                        )}
+                      </div>
+                      <div className="bg-surface px-4 py-3">
+                        <p className="caption">External amount</p>
+                        <p className="mt-1">
+                          <Amount money={evidence.data.reconciliation.external_transaction?.amount} showCurrency />
+                        </p>
+                        {evidence.data.reconciliation.external_transaction && (
+                          <p className="num mt-0.5 text-xs text-ink-3">
+                            {evidence.data.reconciliation.external_transaction.source_system} ·{' '}
+                            {evidence.data.reconciliation.external_transaction.external_id}
+                          </p>
+                        )}
+                      </div>
+                      <div className="bg-surface px-4 py-3">
+                        <p className="caption">Difference</p>
+                        <p className="mt-1">
+                          <Amount money={evidence.data.reconciliation.difference} showCurrency tone="auto" />
+                        </p>
+                      </div>
+                    </div>
+                    <p className="border-t border-border px-4 py-3 text-[0.8125rem] text-ink-2">
+                      {evidence.data.reconciliation.explanation}
+                    </p>
+                  </Panel>
+                )}
+
                 {evidence.data.balance_change && (
                   <Panel>
                     <PanelHeader
@@ -338,6 +418,28 @@ export default function InvestigationDetailPage() {
                       </li>
                     ))}
                   </ul>
+                </Panel>
+
+                <Panel>
+                  <PanelHeader
+                    title="Audit trail"
+                    description="Real audit events for this case and its triggering transaction"
+                  />
+                  {evidence.data.audit_events.length === 0 ? (
+                    <EmptyState title="No audit events recorded" />
+                  ) : (
+                    <ul className="divide-y divide-border">
+                      {evidence.data.audit_events.map((event) => (
+                        <li key={event.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5">
+                          <div className="flex items-center gap-2">
+                            <AuditActionBadge eventType={event.event_type} />
+                            <span className="text-[0.8125rem] text-ink-2">{event.actor}</span>
+                          </div>
+                          <span className="num text-xs text-ink-3">{formatDateTime(event.created_at)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </Panel>
 
                 <p className="flex items-center gap-2 text-2xs text-ink-3">

@@ -109,7 +109,9 @@ def test_amount_mismatch(db, cash_and_revenue):
     cash, revenue = cash_and_revenue
     post(db, cash, revenue, 450_00, external_reference="PAY-301")  # booked 450.00
     reconciliation.ingest_external_transactions(
-        db, source_system="PAYMENT_PROVIDER_A", records=[external("PAY-301", 500_00)]  # claims 500.00
+        db,
+        source_system="PAYMENT_PROVIDER_A",
+        records=[external("PAY-301", 500_00)],  # claims 500.00
     )
 
     run = reconciliation.run_reconciliation(db)

@@ -1,6 +1,6 @@
 /** Transaction register. */
 
-import { Plus, Search } from 'lucide-react';
+import { Download, Plus, Search } from 'lucide-react';
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
@@ -16,28 +16,48 @@ import {
   TableSkeleton,
   THead,
 } from '../components/ui/Table';
+import { buildQuery, downloadFile } from '../lib/api';
+import { useAuth } from '../lib/auth';
+import { useToast } from '../lib/toast';
 import { formatDateTime, formatInteger } from '../lib/format';
 import { useDebounced } from '../lib/hooks';
 import { useCurrencies, useTransactions } from '../lib/queries';
 
 const LIMIT = 25;
 
+/** `<input type="date">` value -> ISO bound (start/end of that local day). */
+function dayBound(value: string, end: boolean): string | undefined {
+  if (!value) return undefined;
+  const date = new Date(`${value}T${end ? '23:59:59.999' : '00:00:00'}`);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
 export default function TransactionsPage() {
   const navigate = useNavigate();
+  const { can } = useAuth();
+  const canCreate = can('transactions:post') || can('drafts:create');
+  const toast = useToast();
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
   const [kind, setKind] = useState('');
   const [currency, setCurrency] = useState('');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
   const [offset, setOffset] = useState(0);
 
   const debouncedSearch = useDebounced(search);
   const { data: currencies } = useCurrencies();
+
+  const postedFrom = dayBound(from, false);
+  const postedTo = dayBound(to, true);
 
   const query = useTransactions({
     q: debouncedSearch || undefined,
     status: status || undefined,
     kind: kind || undefined,
     currency: currency || undefined,
+    posted_from: postedFrom,
+    posted_to: postedTo,
     limit: LIMIT,
     offset,
   });
@@ -54,13 +74,36 @@ export default function TransactionsPage() {
             : 'Posted double-entry transactions'
         }
         actions={
-          <Button
-            variant="primary"
-            icon={<Plus className="h-3.5 w-3.5" strokeWidth={2.4} />}
-            onClick={() => navigate('/app/transactions/new')}
-          >
-            New transaction
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              icon={<Download className="h-3.5 w-3.5" />}
+              title="Exports the transactions matching the current filters (up to 10,000 rows)"
+              onClick={() =>
+                downloadFile(
+                  `/transactions/export${buildQuery({
+                    q: debouncedSearch || undefined,
+                    status: status || undefined,
+                    kind: kind || undefined,
+                    currency: currency || undefined,
+                    posted_from: postedFrom,
+                    posted_to: postedTo,
+                  })}`,
+                  'ledgr-transactions.csv',
+                ).catch((error) => toast.apiError(error))
+              }
+            >
+              Export CSV
+            </Button>
+            {canCreate && (
+              <Button
+                variant="primary"
+                icon={<Plus className="h-3.5 w-3.5" strokeWidth={2.4} />}
+                onClick={() => navigate('/app/transactions/new')}
+              >
+                New transaction
+              </Button>
+            )}
+          </div>
         }
       />
 
@@ -118,7 +161,33 @@ export default function TransactionsPage() {
                 </option>
               ))}
             </Select>
-            {(search || status || kind || currency) && (
+            <label className="flex items-center gap-1.5 text-xs text-ink-3">
+              Posted from
+              <Input
+                type="date"
+                aria-label="Posted from"
+                className="w-36"
+                value={from}
+                onChange={(event) => {
+                  setFrom(event.target.value);
+                  reset();
+                }}
+              />
+            </label>
+            <label className="flex items-center gap-1.5 text-xs text-ink-3">
+              to
+              <Input
+                type="date"
+                aria-label="Posted to"
+                className="w-36"
+                value={to}
+                onChange={(event) => {
+                  setTo(event.target.value);
+                  reset();
+                }}
+              />
+            </label>
+            {(search || status || kind || currency || from || to) && (
               <Button
                 variant="ghost"
                 size="sm"
@@ -127,6 +196,8 @@ export default function TransactionsPage() {
                   setStatus('');
                   setKind('');
                   setCurrency('');
+                  setFrom('');
+                  setTo('');
                   reset();
                 }}
               >

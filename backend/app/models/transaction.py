@@ -14,6 +14,7 @@ from sqlalchemy import (
     Index,
     String,
     Text,
+    UniqueConstraint,
     func,
     text,
 )
@@ -21,10 +22,11 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+from app.db.tenancy import TenantMixin
 from app.models.enums import TransactionKind, TransactionStatus
 
 
-class Transaction(Base):
+class Transaction(TenantMixin, Base):
     """A balanced set of ledger entries recorded as one indivisible fact.
 
     There is no DRAFT or PENDING state: a transaction row exists only if it
@@ -45,7 +47,7 @@ class Transaction(Base):
 
     # Client-facing reference. Unique, so a caller that reuses its own
     # reference gets a conflict rather than a duplicate financial record.
-    reference: Mapped[str] = mapped_column(String(80), nullable=False, unique=True)
+    reference: Mapped[str] = mapped_column(String(80), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
 
@@ -124,6 +126,8 @@ class Transaction(Base):
             "(status = 'REVERSED') = (reversed_at IS NOT NULL)",
             name="reversed_has_timestamp",
         ),
+        # A reference is unique within an organization.
+        UniqueConstraint("organization_id", "reference", name="uq_transactions_reference"),
         Index("ix_transactions_posted_at", "posted_at"),
         Index("ix_transactions_effective_at", "effective_at"),
         Index("ix_transactions_status_kind", "status", "kind"),

@@ -14,9 +14,9 @@ from app.core.errors import (
     UnsupportedCurrency,
     ValidationFailed,
 )
-from app.db.session import SessionLocal
 from app.models.enums import AccountStatus, AccountType, EntryDirection, TransactionStatus
 from app.services import posting
+from tests.conftest import new_session
 
 
 def entry(account, direction, amount, memo=None):
@@ -246,7 +246,7 @@ def test_failed_posting_leaves_no_partial_entries(db, make_account):
 
 
 def _scalar(sql: str, **params) -> int:
-    with SessionLocal() as session:
+    with new_session() as session:
         return int(session.execute(sa.text(sql), params).scalar_one())
 
 
@@ -259,7 +259,7 @@ def _entry_count() -> int:
 
 
 def _balance_row(account_id) -> tuple[int, int]:
-    with SessionLocal() as session:
+    with new_session() as session:
         row = session.execute(
             sa.text(
                 "SELECT debits_minor, credits_minor FROM account_balances WHERE account_id = :id"

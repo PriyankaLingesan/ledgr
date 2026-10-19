@@ -11,19 +11,20 @@ forbid negative balances never receive an entry that would breach that rule.
 
 import argparse
 import random
+import secrets
 import sys
+import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 
+from app.core.config import settings
 from app.core.money import to_minor
 from app.db.session import session_scope
 from app.models.account import Account
-from app.models.auth import ApiKey
 from app.models.enums import AccountType, EntryDirection
 from app.models.transaction import Transaction
 from app.services import accounts as account_service
-from app.services import auth as auth_service
 from app.services import posting
 
 RANDOM_SEED = 20260908
@@ -68,52 +69,75 @@ def _entry(account_id, direction: EntryDirection, amount_minor: int, memo: str |
     )
 
 
-def ensure_demo_api_key() -> None:
-    """Mint a demo API key for local/Docker use if none exists yet.
+DEMO_ORG_NAME = "LEDGR Demo Company"
 
-    Authentication is real (see `app.services.auth`): the plaintext key is
-    never stored, only its hash, so it can only ever be *shown* at creation
-    time - which is exactly what running this at container startup is for.
-    Idempotent (checked every invocation, independent of `--if-empty`'s
-    ledger-only check) so re-running the seed script never mints a second
-    key or breaks a console already configured with the first one.
+
+def ensure_demo_organization(org_name: str) -> uuid.UUID:
+    """Find or create the demo organization and its OWNER; return the org id.
+
+    The owner's email comes from BOOTSTRAP_ADMIN_EMAIL (default
+    owner@demo.ledgr.test, a reserved-style synthetic address) and the
+    password from BOOTSTRAP_ADMIN_PASSWORD. If no password is configured a
+    random one is generated and printed ONCE - nothing is hard-coded, and
+    nothing is stored in the clear. Existing organizations are never modified.
     """
-    with session_scope() as db:
-        if db.execute(select(func.count(ApiKey.id))).scalar_one():
-            return
-        _, raw_key = auth_service.create_api_key(db, label="console-demo")
+    from app.models.user import Organization
+    from app.services import users as user_service
+
+    with session_scope(unscoped=True) as db:
+        found = (
+            db.execute(
+                select(Organization)
+                .where(Organization.name == org_name)
+                .order_by(Organization.created_at)
+            )
+            .scalars()
+            .first()
+        )
+        if found is not None:
+            return found.id
+
+        email = settings.bootstrap_admin_email or "owner@demo.ledgr.test"
+        password = settings.bootstrap_admin_password or secrets.token_urlsafe(18)
+        generated = not settings.bootstrap_admin_password
+        org, _ = user_service.register_organization(
+            db,
+            organization_name=org_name,
+            base_currency="USD",
+            email=email,
+            full_name="Demo Owner",
+            password=password,
+            signup_token=settings.signup_token or None,
+        )
 
     banner = "=" * 72
     print(banner, flush=True)
-    print("LEDGR demo API key (shown once - writes require this from now on):", flush=True)
-    print(f"  {raw_key}", flush=True)
-    print("Paste it into the console's login screen at /login.", flush=True)
+    print(f"Created demo organization '{org_name}' with owner {email}", flush=True)
+    if generated:
+        print(f"  generated password (shown once): {password}", flush=True)
+    else:
+        print("  password: the BOOTSTRAP_ADMIN_PASSWORD you configured", flush=True)
+    print("Sign in at the console with that email and password.", flush=True)
     print(banner, flush=True)
+    return org.id
 
 
-def seed(reset: bool = False, if_empty: bool = False) -> None:
-    ensure_demo_api_key()
+def seed(org_name: str = DEMO_ORG_NAME, if_empty: bool = False, reset: bool = False) -> None:
+    if reset:
+        raise SystemExit(
+            "--reset is not supported: ledger history is append-only and the database is "
+            "multi-tenant, so a global TRUNCATE would destroy other organizations' data. "
+            "To start over locally, run `docker compose down -v`, or seed a fresh "
+            "organization with --org-name."
+        )
+    org_id = ensure_demo_organization(org_name)
     rng = random.Random(RANDOM_SEED)
 
-    with session_scope() as db:
+    with session_scope(org_id) as db:
         existing = db.execute(select(func.count(Account.id))).scalar_one()
         transactions = db.execute(select(func.count(Transaction.id))).scalar_one()
 
-        if reset:
-            # DELETE is blocked by the immutability triggers, and rightly so.
-            # Reseeding is a development action that discards the whole ledger
-            # rather than editing it: TRUNCATE, which fires no row triggers.
-            print("resetting ledger data", flush=True)
-            db.execute(
-                text(
-                    "TRUNCATE audit_events, idempotency_keys, ledger_entries, "
-                    "transactions, account_balances, accounts RESTART IDENTITY CASCADE"
-                )
-            )
-            db.commit()
-            existing = 0
-            transactions = 0
-        elif if_empty and (existing or transactions):
+        if if_empty and (existing or transactions):
             print(
                 f"ledger already populated ({existing} accounts, "
                 f"{transactions} transactions) - skipping",
@@ -121,11 +145,11 @@ def seed(reset: bool = False, if_empty: bool = False) -> None:
             )
             return
         elif existing:
-            print("accounts already exist; use --reset to rebuild", flush=True)
+            print("accounts already exist in this organization; nothing to do", flush=True)
             return
 
     accounts: dict[str, Account] = {}
-    with session_scope() as db:
+    with session_scope(org_id) as db:
         for code, name, account_type, currency, allows_negative in CHART_OF_ACCOUNTS:
             account = account_service.create_account(
                 db,
@@ -153,7 +177,7 @@ def seed(reset: bool = False, if_empty: bool = False) -> None:
     start = now - timedelta(days=27)
     posted = 0
 
-    with session_scope() as db:
+    with session_scope(org_id) as db:
         # --- opening capital ------------------------------------------------
         opening = to_minor("750000.00", "USD")
         posting.post_transaction(
@@ -415,12 +439,13 @@ def seed(reset: bool = False, if_empty: bool = False) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Seed the LEDGR database")
-    parser.add_argument("--reset", action="store_true", help="truncate existing data first")
+    parser.add_argument("--org-name", default=DEMO_ORG_NAME, help="organization to seed")
     parser.add_argument(
         "--if-empty", action="store_true", help="no-op when the ledger already has data"
     )
+    parser.add_argument("--reset", action="store_true", help="(unsupported; explains why)")
     args = parser.parse_args()
-    seed(reset=args.reset, if_empty=args.if_empty)
+    seed(org_name=args.org_name, if_empty=args.if_empty, reset=args.reset)
     return 0
 
 

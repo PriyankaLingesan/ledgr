@@ -10,7 +10,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from app.models.enums import InvestigationSource, InvestigationStatus
+from app.models.enums import InvestigationPriority, InvestigationSource, InvestigationStatus
 from app.schemas.account import AccountSummary
 from app.schemas.investigation import (
     BalanceChangeOut,
@@ -18,6 +18,8 @@ from app.schemas.investigation import (
     IntegrityCheckOut,
     TransactionLineageOut,
 )
+from app.schemas.reconciliation import ReconciliationResultOut
+from app.schemas.system import AuditEventOut
 
 
 class InvestigationCaseCreate(BaseModel):
@@ -25,6 +27,7 @@ class InvestigationCaseCreate(BaseModel):
     issue_summary: str = Field(min_length=1)
     source: InvestigationSource = InvestigationSource.MANUAL
     source_reference: str | None = Field(default=None, max_length=200)
+    priority: InvestigationPriority = InvestigationPriority.MEDIUM
     account_id: uuid.UUID | None = None
     window_from: datetime | None = None
     window_to: datetime | None = None
@@ -47,6 +50,8 @@ class InvestigationCaseOut(BaseModel):
     status: InvestigationStatus
     source: InvestigationSource
     source_reference: str | None
+    priority: InvestigationPriority
+    reconciliation_result_id: uuid.UUID | None
     account: AccountSummary | None
     window_from: datetime | None
     window_to: datetime | None
@@ -64,3 +69,7 @@ class InvestigationCaseEvidenceOut(BaseModel):
     duplicate_candidates: list[DuplicateGroupOut]
     integrity: list[IntegrityCheckOut]
     lineage: TransactionLineageOut | None
+    # The reconciliation exception this case was opened from: external record,
+    # internal transaction, both amounts and the difference - read-only.
+    reconciliation: ReconciliationResultOut | None = None
+    audit_events: list[AuditEventOut] = Field(default_factory=list)

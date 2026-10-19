@@ -6,6 +6,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 from app.models.enums import EntryDirection, ReconciliationStatus
+from app.schemas.casework import DecisionOut
 from app.schemas.common import Money
 
 
@@ -53,6 +54,18 @@ class ReconciliationResultOut(BaseModel):
     internal_transaction_id: uuid.UUID | None
     internal_reference: str | None
     internal_amount: Money | None
+    # Set when someone has already opened a case for this exception.
+    investigation_id: uuid.UUID | None = None
+    investigation_case_number: str | None = None
+    # A person's recorded conclusion (never changes `status`, which stays deterministic).
+    latest_decision: DecisionOut | None = None
+
+
+class ReconciliationSourceOut(BaseModel):
+    source_system: str
+    record_count: int
+    latest_transaction_at: datetime | None
+    last_imported_at: datetime | None
 
 
 class ReconciliationRunSummaryOut(BaseModel):

@@ -9,6 +9,7 @@ import hashlib
 from datetime import UTC, datetime
 
 from app.models.account import Account
+from app.models.audit import AuditEvent
 from app.models.enums import EntryDirection, NormalBalance
 from app.models.investigation import Investigation
 from app.models.ledger_entry import LedgerEntry
@@ -41,6 +42,7 @@ from app.schemas.reconciliation import (
     ReconciliationRunOut,
     ReconciliationRunSummaryOut,
 )
+from app.schemas.system import AuditEventOut
 from app.schemas.transaction import (
     LedgerEntryOut,
     TransactionOut,
@@ -357,9 +359,7 @@ def correction_simulation_out(simulation: CorrectionSimulation) -> CorrectionSim
                 account_name=impact.account.name,
                 currency=impact.account.currency,
                 current_balance=Money.of(impact.current_balance_minor, impact.account.currency),
-                simulated_balance=Money.of(
-                    impact.simulated_balance_minor, impact.account.currency
-                ),
+                simulated_balance=Money.of(impact.simulated_balance_minor, impact.account.currency),
                 delta=Money.of(impact.delta_minor, impact.account.currency),
             )
             for impact in simulation.impacts
@@ -400,6 +400,8 @@ def investigation_case_out(case: Investigation) -> InvestigationCaseOut:
         status=case.status,
         source=case.source,
         source_reference=case.source_reference,
+        priority=case.priority,
+        reconciliation_result_id=case.reconciliation_result_id,
         account=account_summary(case.account) if case.account is not None else None,
         window_from=case.window_from,
         window_to=case.window_to,
@@ -421,6 +423,12 @@ def investigation_case_evidence_out(evidence: CaseEvidence) -> InvestigationCase
         duplicate_candidates=[duplicate_group_out(g) for g in evidence.duplicate_candidates],
         integrity=[integrity_check_out(c) for c in evidence.integrity],
         lineage=transaction_lineage_out(evidence.lineage) if evidence.lineage else None,
+        reconciliation=(
+            reconciliation_result_out(evidence.reconciliation_result)
+            if evidence.reconciliation_result
+            else None
+        ),
+        audit_events=[audit_event_out(e) for e in evidence.audit_events],
     )
 
 
@@ -483,4 +491,18 @@ def reconciliation_run_out(run: ReconciliationRun) -> ReconciliationRunOut:
     return ReconciliationRunOut(
         **reconciliation_run_summary_out(run).model_dump(),
         results=[reconciliation_result_out(r) for r in run.results],
+    )
+
+
+def audit_event_out(e: AuditEvent) -> AuditEventOut:
+    return AuditEventOut(
+        id=e.id,
+        seq=e.seq,
+        event_type=e.event_type,
+        resource_type=e.resource_type,
+        resource_id=e.resource_id,
+        actor=e.actor,
+        request_id=e.request_id,
+        payload=e.payload,
+        created_at=e.created_at,
     )

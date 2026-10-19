@@ -31,6 +31,17 @@ seams that matter are enforced by module boundaries and tests instead of by netw
 
 ---
 
+## Multi-tenancy
+
+One deployment serves many organizations. The principal (a login session or API key) carries the
+organization; `get_principal` binds it to the request's database session, and
+`app/db/tenancy.py` adds `organization_id = <org>` to every ORM statement on a tenant table
+(fail closed: no organization → no rows), stamps new rows, and refuses cross-organization writes.
+PostgreSQL adds composite foreign keys and per-organization unique constraints. Out-of-request
+work (the idempotency claim's second connection, independent audit writes) is told its
+organization explicitly. Details, guarantees and limits: [`OPERATIONS.md`](OPERATIONS.md#tenant-isolation)
+and [`INVARIANTS.md`](INVARIANTS.md).
+
 ## Money
 
 Every amount is a `BIGINT` count of **minor units** (cents, paise, yen) alongside an

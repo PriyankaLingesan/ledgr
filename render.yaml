@@ -58,6 +58,18 @@ services:
       # first deploy and adjust here if it doesn't match.
       - key: CORS_ORIGINS
         value: https://ledgr-web.onrender.com
+      # Self-service signup creates a new, isolated organization. For a public
+      # demo keep it behind an invite code (Render generates one: read it from this
+      # service's Environment tab) - or set ALLOW_SIGNUP=false and seed accounts.
+      - key: SIGNUP_TOKEN
+        generateValue: true
+      # The console (ledgr-web.onrender.com) and API (ledgr-api.onrender.com) are
+      # on different sites, so the session cookie must be SameSite=None and, as
+      # that requires, Secure (Render serves HTTPS).
+      - key: SESSION_COOKIE_SAMESITE
+        value: none
+      - key: SESSION_COOKIE_SECURE
+        value: "true"
       # AI is optional. Leave these unset in the dashboard and every AI
       # endpoint answers "unavailable" - the ledger works identically either
       # way. Fill them in (Environment tab, not this file) to enable it.

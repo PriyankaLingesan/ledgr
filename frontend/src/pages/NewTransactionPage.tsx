@@ -12,6 +12,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 
 import { PageHeader } from '../components/layout/AppShell';
 import { Amount, BalanceAssertion } from '../components/ledger/atoms';
+import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import {
   Badge,
   Button,
@@ -24,9 +25,12 @@ import {
   Spinner,
 } from '../components/ui/primitives';
 import { ApiError, newIdempotencyKey } from '../lib/api';
+import { Forbidden, useAuth } from '../lib/auth';
 import { cn } from '../lib/cn';
-import { exponentFor, parseAmountToMinor } from '../lib/format';
+import { exponentFor, formatMinor, parseAmountToMinor } from '../lib/format';
+import { useCreateDraft } from '../lib/opsQueries';
 import { useAccounts, useCreateTransaction, useCurrencies } from '../lib/queries';
+import { useToast } from '../lib/toast';
 import type { Account, EntryDirection, TransactionCreate } from '../lib/types';
 
 /**
@@ -65,6 +69,12 @@ export default function NewTransactionPage() {
   const location = useLocation();
   const { data: currencies } = useCurrencies();
   const createTransaction = useCreateTransaction();
+  const createDraft = useCreateDraft();
+  const { can } = useAuth();
+  const toast = useToast();
+  const canPost = can('transactions:post');
+  const canDraft = can('drafts:create');
+  const [confirmingPost, setConfirmingPost] = useState(false);
 
   const prefill = (location.state as AIPrefillState | null)?.aiProposal ?? null;
   const [fromAI] = useState(Boolean(prefill));
@@ -133,56 +143,114 @@ export default function NewTransactionPage() {
     { label: 'Amounts valid', ok: amountsValid },
     { label: 'Debits equal credits', ok: balanced },
   ];
-  const canSubmit = checks.every((c) => c.ok) && !createTransaction.isPending;
-  const apiError = createTransaction.error instanceof ApiError ? createTransaction.error : null;
+  const formValid = checks.every((c) => c.ok);
+  const busy = createTransaction.isPending || createDraft.isPending;
+  const canSubmit = formValid && !busy;
+  const apiError =
+    createTransaction.error instanceof ApiError
+      ? createTransaction.error
+      : createDraft.error instanceof ApiError
+        ? createDraft.error
+        : null;
+  // Organization policy: large amounts must be proposed and approved by a second person.
+  const approvalRequired = apiError?.code === 'approval_required';
 
   const update = (key: string, patch: Partial<DraftEntry>) =>
     setEntries((current) =>
       current.map((entry) => (entry.key === key ? { ...entry, ...patch } : entry)),
     );
 
+  const buildPayload = (): TransactionCreate => ({
+    description: description.trim(),
+    currency,
+    reference: reference.trim() || null,
+    external_reference: externalReference.trim() || null,
+    effective_at: effectiveAt ? new Date(effectiveAt).toISOString() : null,
+    entries: parsed.map((row) => ({
+      account_id: row.entry.accountId,
+      direction: row.entry.direction,
+      amount_minor: row.minor ?? 0,
+      memo: row.entry.memo.trim() || null,
+    })),
+  });
+
   const submit = () => {
     // Belt-and-braces against a double-click outrunning the `disabled` prop's
     // next render: the same idempotency key would make a genuine race safe
     // anyway, but there is no reason to make the server arbitrate this one.
-    if (createTransaction.isPending) return;
+    if (busy) return;
     createTransaction.mutate(
+      { ...buildPayload(), idempotencyKey },
       {
-        description: description.trim(),
-        currency,
-        reference: reference.trim() || null,
-        external_reference: externalReference.trim() || null,
-        effective_at: effectiveAt ? new Date(effectiveAt).toISOString() : null,
-        entries: parsed.map((row) => ({
-          account_id: row.entry.accountId,
-          direction: row.entry.direction,
-          amount_minor: row.minor ?? 0,
-          memo: row.entry.memo.trim() || null,
-        })),
-        idempotencyKey,
-      },
-      {
-        onSuccess: (transaction) => navigate(`/app/transactions/${transaction.id}`),
+        onSuccess: (transaction) => {
+          setConfirmingPost(false);
+          toast.success('Transaction posted', transaction.reference);
+          navigate(`/app/transactions/${transaction.id}`);
+        },
+        onError: () => setConfirmingPost(false),
       },
     );
   };
 
+  /** Propose instead of posting: maker-checker. Moves no money until someone else approves. */
+  const propose = (submitForApproval: boolean) => {
+    if (busy) return;
+    createDraft.mutate(
+      { ...buildPayload(), submit: submitForApproval },
+      {
+        onSuccess: (draft) => {
+          toast.success(
+            submitForApproval ? 'Submitted for approval' : 'Draft saved',
+            submitForApproval
+              ? `Draft #${draft.seq} is waiting for a second person to approve it.`
+              : `Draft #${draft.seq} has not been submitted yet.`,
+          );
+          navigate('/app/approvals');
+        },
+        onError: (error) => toast.apiError(error),
+      },
+    );
+  };
+
+  if (!canPost && !canDraft) return <Forbidden />;
+
   return (
     <>
       <PageHeader
-        title="Post a transaction"
-        description="Entries are written atomically: either all of them land, or none do."
+        title={canPost ? 'Post a transaction' : 'Propose a transaction'}
+        description={
+          canPost
+            ? 'Entries are written atomically: either all of them land, or none do.'
+            : 'You can propose a transaction; a different person approves it before it reaches the ledger.'
+        }
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Button onClick={() => navigate(-1)}>Cancel</Button>
-            <Button
-              variant="primary"
-              disabled={!canSubmit}
-              onClick={submit}
-              icon={createTransaction.isPending ? <Spinner /> : undefined}
-            >
-              Post transaction
-            </Button>
+            {canDraft && (
+              <Button disabled={!canSubmit} onClick={() => propose(false)}>
+                Save draft
+              </Button>
+            )}
+            {canDraft && (
+              <Button
+                variant={canPost ? 'secondary' : 'primary'}
+                disabled={!canSubmit}
+                onClick={() => propose(true)}
+                icon={createDraft.isPending ? <Spinner /> : undefined}
+              >
+                Submit for approval
+              </Button>
+            )}
+            {canPost && (
+              <Button
+                variant="primary"
+                disabled={!canSubmit}
+                onClick={() => setConfirmingPost(true)}
+                icon={createTransaction.isPending ? <Spinner /> : undefined}
+              >
+                Post transaction
+              </Button>
+            )}
           </div>
         }
       />
@@ -428,11 +496,22 @@ export default function NewTransactionPage() {
               ))}
             </ul>
             {apiError && (
-              <div className="border-t border-border px-4 py-3">
+              <div className="border-t border-border px-4 py-3" role="alert">
                 <p className="flex items-start gap-2 text-[0.8125rem] text-negative">
                   <X className="mt-0.5 h-4 w-4 shrink-0" strokeWidth={2.2} />
                   <span>{apiError.message}</span>
                 </p>
+                {approvalRequired && canDraft && (
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    className="mt-3"
+                    disabled={busy}
+                    onClick={() => propose(true)}
+                  >
+                    Submit for approval instead
+                  </Button>
+                )}
                 {Object.keys(apiError.details).length > 0 && (
                   <pre className="num mt-2 max-h-32 overflow-auto rounded-sm border border-border bg-surface-2 p-2 text-2xs text-ink-2">
                     {JSON.stringify(apiError.details, null, 2)}
@@ -469,6 +548,24 @@ export default function NewTransactionPage() {
           </Panel>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={confirmingPost}
+        title="Post this transaction?"
+        description="Posted transactions are immutable. A mistake can only be corrected by a reversal."
+        confirmLabel="Post transaction"
+        busy={createTransaction.isPending}
+        onClose={() => setConfirmingPost(false)}
+        onConfirm={submit}
+      >
+        <p className="text-[0.875rem] text-ink-2">
+          {description.trim() || 'Untitled transaction'} -{' '}
+          <span className="num font-medium text-ink">
+            {formatMinor(totalDebits, currency, currencies, true)}
+          </span>{' '}
+          across {entries.length} entries.
+        </p>
+      </ConfirmDialog>
     </>
   );
 }

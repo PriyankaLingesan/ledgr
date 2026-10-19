@@ -79,6 +79,11 @@ class PostCommand:
     actor: str = "system"
     request_id: str | None = None
     idempotency_key: str | None = None
+    # System time of the posting. Left unset by every API path (the database
+    # clock decides). A demonstration seeder that loads *simulated history* may
+    # set it so the console's posted-date filters and windows have a history to
+    # work on; such transactions are tagged `simulated` in their metadata.
+    posted_at: datetime | None = None
 
 
 def generate_reference(prefix: str = "TXN") -> str:
@@ -232,6 +237,7 @@ def _write_transaction(
         idempotency_key=cmd.idempotency_key,
         external_reference=cmd.external_reference,
         extra=cmd.metadata or {},
+        **({"posted_at": cmd.posted_at} if cmd.posted_at is not None else {}),
     )
     db.add(transaction)
     db.flush()  # assign transaction.id / seq
@@ -246,6 +252,7 @@ def _write_transaction(
             currency=currency,
             entry_index=index,
             memo=item.memo,
+            **({"created_at": cmd.posted_at} if cmd.posted_at is not None else {}),
         )
         db.add(entry)
         entries.append(entry)
@@ -361,6 +368,7 @@ def reverse_transaction(
     request_id: str | None = None,
     idempotency_key: str | None = None,
     auto_commit: bool = True,
+    posted_at: datetime | None = None,
 ) -> Transaction:
     """Reverse a posted transaction with a mirrored compensating entry set.
 
@@ -428,6 +436,7 @@ def reverse_transaction(
         actor=actor,
         request_id=request_id,
         idempotency_key=idempotency_key,
+        posted_at=posted_at,
     )
 
     # Same reasoning as `post_transaction`: `_write_transaction` flushes its

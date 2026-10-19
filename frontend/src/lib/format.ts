@@ -25,7 +25,8 @@ export function formatMoney(
   const { registry, showCurrency = true, signed = false } = options;
   const exponent = exponentFor(money.currency, registry);
   const value = money.amount_minor / 10 ** exponent;
-  const formatted = new Intl.NumberFormat('en-US', {
+  // Indian digit grouping (12,34,567.00) for rupees; every other currency keeps en-US.
+  const formatted = new Intl.NumberFormat(money.currency === 'INR' ? 'en-IN' : 'en-US', {
     minimumFractionDigits: exponent,
     maximumFractionDigits: exponent,
     signDisplay: signed ? 'exceptZero' : 'auto',

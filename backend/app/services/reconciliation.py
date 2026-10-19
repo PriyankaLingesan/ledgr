@@ -18,6 +18,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.errors import DuplicateReference, NotFound
+from app.db.tenancy import require_organization
 from app.models.enums import (
     EntryDirection,
     ReconciliationStatus,
@@ -57,12 +58,15 @@ def ingest_external_transactions(
     `INSERT ... ON CONFLICT DO NOTHING ... RETURNING` shape `idempotency.py`
     already uses, applied here to evidence rows instead of a claim row.
     """
+    organization_id = require_organization(db)
     imported = 0
     for record in records:
         result = db.execute(
             pg_insert(ExternalTransaction)
             .values(
                 id=uuid.uuid4(),
+                # Core inserts bypass the ORM's tenant stamping: set it explicitly.
+                organization_id=organization_id,
                 source_system=source_system,
                 external_id=record.external_id,
                 account_reference=record.account_reference,
@@ -74,7 +78,7 @@ def ingest_external_transactions(
                 description=record.description,
             )
             .on_conflict_do_nothing(
-                index_elements=["source_system", "external_id"]
+                index_elements=["organization_id", "source_system", "external_id"]
             )
             .returning(ExternalTransaction.id)
         ).first()
@@ -96,7 +100,10 @@ def _amount_outcome(external: ExternalTransaction, internal: Transaction) -> _Ou
     # A transaction's "value" is its total_debits_minor - the same convention
     # `daily_volume` already uses: in double-entry the debit side is the
     # whole amount that moved.
-    if internal.total_debits_minor == external.amount_minor and internal.currency == external.currency:
+    if (
+        internal.total_debits_minor == external.amount_minor
+        and internal.currency == external.currency
+    ):
         explanation = (
             f"External id {external.external_id} matched internal transaction "
             f"{internal.reference}. Amount: {external.amount_minor / 100:.2f} "
@@ -215,7 +222,9 @@ def _find_missing_external(db: Session) -> list[tuple[Transaction, _Outcome]]:
     return missing
 
 
-def run_reconciliation(db: Session, *, actor: str = "system") -> ReconciliationRun:
+def run_reconciliation(
+    db: Session, *, actor: str = "system", request_id: str | None = None
+) -> ReconciliationRun:
     """Compare every ingested external transaction against the ledger, both
     directions: every external record against the ledger, and every
     live, externally-referenced internal transaction against imported
@@ -279,6 +288,7 @@ def run_reconciliation(db: Session, *, actor: str = "system") -> ReconciliationR
         resource_type="reconciliation_run",
         resource_id=str(run.id),
         actor=actor,
+        request_id=request_id,
         payload={
             "external_count": run.external_count,
             "matched_count": run.matched_count,
@@ -312,7 +322,9 @@ def load_run(db: Session, run_id: uuid.UUID) -> ReconciliationRun:
     return run
 
 
-def list_runs(db: Session, *, limit: int = 20, offset: int = 0) -> tuple[list[ReconciliationRun], int]:
+def list_runs(
+    db: Session, *, limit: int = 20, offset: int = 0
+) -> tuple[list[ReconciliationRun], int]:
     total = db.execute(select(func.count(ReconciliationRun.id))).scalar_one()
     items = (
         db.execute(
@@ -362,18 +374,76 @@ _DEMO_INTERNAL_TRANSACTIONS = [
 ]
 
 _DEMO_EXTERNAL_RECORDS = [
-    ExternalRecord("PAY-001", 500_000, "USD", EntryDirection.DEBIT, datetime(2026, 9, 8, 18, 34), description="Processor settlement"),
-    ExternalRecord("PAY-002", 250_000, "USD", EntryDirection.DEBIT, datetime(2026, 9, 8, 18, 40), description="Processor settlement"),
-    ExternalRecord("PAY-003", 500_000, "USD", EntryDirection.DEBIT, datetime(2026, 9, 8, 18, 46), description="Processor settlement"),
-    ExternalRecord("PAY-004", 80_000, "USD", EntryDirection.DEBIT, datetime(2026, 9, 8, 18, 52), description="Processor settlement"),
-    ExternalRecord("PAY-005", 120_000, "USD", EntryDirection.DEBIT, datetime(2026, 9, 8, 18, 58), description="Processor settlement"),
-    ExternalRecord("PAY-006", 300_000, "USD", EntryDirection.DEBIT, datetime(2026, 9, 9, 9, 10), description="Processor settlement"),
-    ExternalRecord("PAY-007", 15_000, "USD", EntryDirection.DEBIT, datetime(2026, 9, 9, 9, 16), description="Processor settlement"),
-    ExternalRecord("PAY-008", 99_900, "USD", EntryDirection.DEBIT, datetime(2026, 9, 9, 9, 22), description="Processor settlement"),
+    ExternalRecord(
+        "PAY-001",
+        500_000,
+        "USD",
+        EntryDirection.DEBIT,
+        datetime(2026, 9, 8, 18, 34),
+        description="Processor settlement",
+    ),
+    ExternalRecord(
+        "PAY-002",
+        250_000,
+        "USD",
+        EntryDirection.DEBIT,
+        datetime(2026, 9, 8, 18, 40),
+        description="Processor settlement",
+    ),
+    ExternalRecord(
+        "PAY-003",
+        500_000,
+        "USD",
+        EntryDirection.DEBIT,
+        datetime(2026, 9, 8, 18, 46),
+        description="Processor settlement",
+    ),
+    ExternalRecord(
+        "PAY-004",
+        80_000,
+        "USD",
+        EntryDirection.DEBIT,
+        datetime(2026, 9, 8, 18, 52),
+        description="Processor settlement",
+    ),
+    ExternalRecord(
+        "PAY-005",
+        120_000,
+        "USD",
+        EntryDirection.DEBIT,
+        datetime(2026, 9, 8, 18, 58),
+        description="Processor settlement",
+    ),
+    ExternalRecord(
+        "PAY-006",
+        300_000,
+        "USD",
+        EntryDirection.DEBIT,
+        datetime(2026, 9, 9, 9, 10),
+        description="Processor settlement",
+    ),
+    ExternalRecord(
+        "PAY-007",
+        15_000,
+        "USD",
+        EntryDirection.DEBIT,
+        datetime(2026, 9, 9, 9, 16),
+        description="Processor settlement",
+    ),
+    ExternalRecord(
+        "PAY-008",
+        99_900,
+        "USD",
+        EntryDirection.DEBIT,
+        datetime(2026, 9, 9, 9, 22),
+        description="Processor settlement",
+    ),
 ]
 
 
-def load_demo_data(db: Session, *, cash_account_id: uuid.UUID, revenue_account_id: uuid.UUID) -> IngestResult:
+def load_demo_data(
+    db: Session, *, cash_account_id: uuid.UUID, revenue_account_id: uuid.UUID
+) -> IngestResult:
     """Seed a small, deterministic reconciliation scenario: 4 exact matches,
     1 amount mismatch, 3 missing-internal. Safe to call more than once -
     every write here is idempotent.

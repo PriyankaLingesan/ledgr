@@ -177,7 +177,21 @@ export function useAuditEvents(params: Record<string, QueryValue>, enabled = tru
 }
 
 function invalidateLedger(client: ReturnType<typeof useQueryClient>) {
-  for (const key of ['accounts', 'account', 'transactions', 'transaction', 'entries', 'stats', 'audit', 'integrity']) {
+  for (const key of [
+    'accounts',
+    'account',
+    'transactions',
+    'transaction',
+    'entries',
+    'stats',
+    'audit',
+    'integrity',
+    'dashboard',
+    'statement',
+    'alerts',
+    'onboarding',
+    'drafts',
+  ]) {
     client.invalidateQueries({ queryKey: [key] });
   }
 }
@@ -405,6 +419,9 @@ export function useInvestigationEvidence(id: string | undefined) {
 function invalidateInvestigations(client: ReturnType<typeof useQueryClient>) {
   client.invalidateQueries({ queryKey: ['investigations'] });
   client.invalidateQueries({ queryKey: ['investigation'] });
+  client.invalidateQueries({ queryKey: ['dashboard'] });
+  client.invalidateQueries({ queryKey: ['audit'] });
+  client.invalidateQueries({ queryKey: ['reconciliation-run'] });
 }
 
 export function useCreateInvestigation() {
@@ -449,6 +466,9 @@ export function useReconciliationRun(id: string | undefined) {
 function invalidateReconciliation(client: ReturnType<typeof useQueryClient>) {
   client.invalidateQueries({ queryKey: ['reconciliation-runs'] });
   client.invalidateQueries({ queryKey: ['reconciliation-run'] });
+  for (const key of ['dashboard', 'alerts', 'audit', 'onboarding', 'reconciliation-sources']) {
+    client.invalidateQueries({ queryKey: [key] });
+  }
 }
 
 export function useImportDemoReconciliationData() {

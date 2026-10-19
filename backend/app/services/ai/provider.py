@@ -80,6 +80,7 @@ class AIProvider(Protocol):
         messages: list[AIMessage],
         tools: list[ToolSpec] | None = None,
         max_tokens: int = 1024,
+        json_mode: bool = False,
     ) -> Completion: ...
 
 
@@ -113,6 +114,7 @@ class AnthropicProvider:
         messages: list[AIMessage],
         tools: list[ToolSpec] | None = None,
         max_tokens: int = 1024,
+        json_mode: bool = False,
     ) -> Completion:
         body: dict[str, Any] = {
             "model": self._model,
@@ -221,6 +223,7 @@ class OpenAIProvider:
         messages: list[AIMessage],
         tools: list[ToolSpec] | None = None,
         max_tokens: int = 1024,
+        json_mode: bool = False,
     ) -> Completion:
         wire_messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
         wire_messages.extend(self._to_wire_message(m) for m in messages)
@@ -230,6 +233,8 @@ class OpenAIProvider:
             "messages": wire_messages,
             "max_tokens": max_tokens,
         }
+        if json_mode:
+            body["response_format"] = {"type": "json_object"}
         if tools:
             body["tools"] = [
                 {
@@ -294,6 +299,13 @@ class OpenAIProvider:
         return {"role": message.role, "content": message.content or ""}
 
 
+# Gemini's "thinking" models spend part of `maxOutputTokens` on hidden reasoning before the first
+# visible character, so a small cap (the explain endpoint asks for 300) can return a sentence
+# fragment - or, in JSON mode, invalid JSON. Headroom keeps the *visible* answer within the
+# caller's own limit. (Observed against the live API: a 300-token request returned ~35 characters.)
+_GEMINI_THINKING_HEADROOM = 2048
+
+
 class GeminiProvider:
     """Google Gemini generateContent API."""
 
@@ -310,6 +322,7 @@ class GeminiProvider:
         messages: list[AIMessage],
         tools: list[ToolSpec] | None = None,
         max_tokens: int = 1024,
+        json_mode: bool = False,
     ) -> Completion:
         contents = []
 
@@ -374,7 +387,8 @@ class GeminiProvider:
             },
             "contents": contents,
             "generationConfig": {
-                "maxOutputTokens": max_tokens,
+                "maxOutputTokens": max_tokens + _GEMINI_THINKING_HEADROOM,
+                **({"responseMimeType": "application/json"} if json_mode else {}),
             },
         }
 
@@ -403,18 +417,23 @@ class GeminiProvider:
                 timeout=self._timeout,
             )
 
-            print("\n===== GEMINI DEBUG =====")
-            print("STATUS:", response.status_code)
-            print("BODY:", response.text)
-            print("========================\n")
-
             response.raise_for_status()
 
         except httpx.HTTPError as exc:
             _raise_for_transport(exc, "gemini")
 
         payload = response.json()
-        parts = payload["candidates"][0]["content"]["parts"]
+        try:
+            parts = payload["candidates"][0]["content"]["parts"]
+        except (KeyError, IndexError, TypeError) as exc:
+            # e.g. the response was blocked by a safety filter or came back empty.
+            logger.warning("gemini returned no usable candidate")
+            raise ProviderError(
+                "the gemini API returned no usable answer", details={"provider": "gemini"}
+            ) from exc
+
+        if payload["candidates"][0].get("finishReason") == "MAX_TOKENS":
+            logger.warning("gemini answer was cut off at the token limit")
 
         text_parts: list[str] = []
         tool_calls: list[ToolCall] = []

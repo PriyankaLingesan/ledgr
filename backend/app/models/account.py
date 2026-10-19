@@ -15,6 +15,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
     text,
 )
@@ -22,10 +23,11 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
+from app.db.tenancy import TenantMixin
 from app.models.enums import AccountStatus, AccountType, NormalBalance
 
 
-class Account(Base, TimestampMixin):
+class Account(TenantMixin, Base, TimestampMixin):
     """A node in the chart of accounts.
 
     An account is a *classification*, not a wallet: it holds no money of its
@@ -37,7 +39,7 @@ class Account(Base, TimestampMixin):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
     # Stable human-facing handle used in operator tooling and imports.
-    code: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    code: Mapped[str] = mapped_column(String(64), nullable=False)
     name: Mapped[str] = mapped_column(String(160), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -70,6 +72,8 @@ class Account(Base, TimestampMixin):
     )
 
     __table_args__ = (
+        # Account codes are unique *within an organization*.
+        UniqueConstraint("organization_id", "code", name="uq_accounts_code"),
         CheckConstraint("char_length(currency) = 3", name="currency_is_iso4217"),
         CheckConstraint("char_length(code) > 0", name="code_not_empty"),
         Index("ix_accounts_type_status", "type", "status"),
@@ -80,7 +84,7 @@ class Account(Base, TimestampMixin):
         return f"<Account {self.code} {self.type.value} {self.currency}>"
 
 
-class AccountBalance(Base):
+class AccountBalance(TenantMixin, Base):
     """Transactionally-maintained balance cache.
 
     NOT the source of truth. Ledger entries are authoritative; this row exists

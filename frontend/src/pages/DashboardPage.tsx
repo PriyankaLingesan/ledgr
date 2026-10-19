@@ -1,63 +1,88 @@
 /**
- * Ledger overview.
+ * Financial operations dashboard.
  *
- * Every number here is derived from ledger entries by the API. There are no
- * invented metrics, no growth percentages against imaginary baselines, and
- * no vanity counters - if a figure cannot be read from the API, it is not on
- * this page.
+ * Every figure comes from `GET /dashboard`, which the server assembles from the
+ * ledger, the audit trail and the latest reconciliation run at request time.
+ * There are no invented metrics and no decorative numbers: if the server cannot
+ * state it, it is not on this page.
  */
 
-import { ArrowUpRight, PenLine, SearchCheck, ShieldAlert, ShieldCheck } from 'lucide-react';
-import { useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { ArrowUpRight, ShieldAlert, ShieldCheck } from 'lucide-react';
+import { useMemo } from 'react';
+import { Link } from 'react-router-dom';
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
 import { LedgerBriefWidget } from '../components/ai/LedgerBriefWidget';
 import { PageHeader } from '../components/layout/AppShell';
 import { Amount, TransactionStatusBadge } from '../components/ledger/atoms';
+import {
+  AuditActionBadge,
+  CaseStatusBadge,
+  OnboardingChecklist,
+  PriorityBadge,
+  SeverityBadge,
+} from '../components/ops/atoms';
 import { Badge, Button, Panel, PanelHeader, Skeleton, StatusDot } from '../components/ui/primitives';
 import { EmptyState, ErrorState, Table, TableScroller, THead } from '../components/ui/Table';
+import { useAuth } from '../lib/auth';
 import { cn } from '../lib/cn';
-import { formatDate, formatInteger, formatMinor } from '../lib/format';
-import {
-  useControlExceptions,
-  useCurrencies,
-  useIntegrity,
-  useInvestigations,
-  useStats,
-  useTransactions,
-} from '../lib/queries';
+import { formatDateTime, formatInteger, formatMinor, formatRelative } from '../lib/format';
+import { useDashboard, useLoadDemoData, useOnboarding } from '../lib/opsQueries';
+import { useCurrencies } from '../lib/queries';
+import { useToast } from '../lib/toast';
 
-function StatTile({
+function Tile({
   label,
   value,
   meta,
   loading,
+  to,
+  tone,
 }: {
   label: string;
   value: string;
   meta?: React.ReactNode;
   loading?: boolean;
+  to?: string;
+  tone?: 'warning' | 'negative';
 }) {
-  return (
-    <div className="hover-lift relative z-0 hover:z-10 border border-border bg-surface px-5 py-4">
+  const body = (
+    <div className="h-full border border-border bg-surface px-5 py-4 transition-colors hover:bg-surface-2">
       <p className="caption">{label}</p>
       {loading ? (
         <Skeleton className="mt-2 h-7 w-20" />
       ) : (
-        <p className="num mt-1 text-2xl font-semibold text-ink">{value}</p>
+        <p
+          className={cn(
+            'num mt-1 text-2xl font-semibold',
+            tone === 'warning' ? 'text-warning' : tone === 'negative' ? 'text-negative' : 'text-ink',
+          )}
+        >
+          {value}
+        </p>
       )}
       {meta && <p className="mt-1 text-[0.8125rem] text-ink-3">{meta}</p>}
     </div>
   );
+  return to ? (
+    <Link to={to} className="block focus-visible:outline-2 focus-visible:outline-accent">
+      {body}
+    </Link>
+  ) : (
+    body
+  );
 }
 
-function VolumeChart({ currency }: { currency: string }) {
-  const { data: stats } = useStats(14);
+function VolumeChart({
+  rows,
+  currency,
+}: {
+  rows: { day: string; currency: string; transaction_count: number; posted_minor: number }[];
+  currency: string;
+}) {
   const { data: currencies } = useCurrencies();
 
   const series = useMemo(() => {
-    if (!stats) return [];
     const byDay = new Map<string, { day: string; value: number; count: number }>();
     for (let i = 13; i >= 0; i -= 1) {
       const date = new Date();
@@ -66,16 +91,16 @@ function VolumeChart({ currency }: { currency: string }) {
       const key = date.toISOString().slice(0, 10);
       byDay.set(key, { day: key, value: 0, count: 0 });
     }
-    for (const row of stats.daily_volume) {
+    for (const row of rows) {
       if (row.currency !== currency) continue;
       const bucket = byDay.get(row.day.slice(0, 10));
       if (bucket) {
-        bucket.value = row.posted.amount_minor;
+        bucket.value = row.posted_minor;
         bucket.count = row.transaction_count;
       }
     }
     return [...byDay.values()];
-  }, [stats, currency]);
+  }, [rows, currency]);
 
   const exponent = currencies?.find((c) => c.code === currency)?.exponent ?? 2;
 
@@ -123,416 +148,455 @@ function VolumeChart({ currency }: { currency: string }) {
   );
 }
 
-function ControlCenterTile({
-  label,
-  value,
-  loading,
-  tone,
-  to,
-}: {
-  label: string;
-  value: string;
-  loading?: boolean;
-  tone?: 'neutral' | 'warning' | 'positive';
-  to: string;
-}) {
-  const valueTone =
-    tone === 'warning' ? 'text-warning' : tone === 'positive' ? 'text-positive' : 'text-ink';
-  return (
-    <Link to={to} className="hover-lift block px-5 py-4 transition-colors hover:bg-surface-2">
-      <p className="caption">{label}</p>
-      {loading ? (
-        <Skeleton className="mt-2 h-7 w-14" />
-      ) : (
-        <p className={cn('num mt-1 text-2xl font-semibold', valueTone)}>{value}</p>
-      )}
-    </Link>
-  );
-}
-
-/**
- * The Financial Control Center's opening question: does anything here
- * require investigation right now? Every count is read live from the same
- * endpoints the Flight Recorder and Investigations pages use - nothing is
- * pre-computed or cached separately, so this can never drift from what an
- * operator finds by clicking through.
- */
-function ControlCenter() {
-  const stats = useStats(14);
-  const exceptions = useControlExceptions();
-  const openCases = useInvestigations({ status: 'OPEN', limit: 5 });
-  const recentCases = useInvestigations({ limit: 5 });
-  const recentTransactions = useTransactions({ limit: 50 });
-
-  const balanced = stats.data?.ledger_balanced;
-  const duplicateCount = exceptions.data?.filter((e) => e.kind === 'POTENTIAL_DUPLICATE').length ?? 0;
-  const exceptionCount = exceptions.data?.length ?? 0;
-  const openCaseCount = openCases.data?.total ?? 0;
-  const recentCorrections = (recentTransactions.data?.items ?? []).filter(
-    (t) => typeof t.metadata.corrects === 'string',
-  );
-
-  const nothingToSee =
-    stats.data && exceptions.data && balanced && exceptionCount === 0 && openCaseCount === 0;
-
-  return (
-    <Panel>
-      <PanelHeader
-        title="Financial Control Center"
-        description="Does anything here require investigation right now?"
-        actions={
-          <Link
-            to="/app/investigations"
-            className="inline-flex items-center gap-1 text-[0.8125rem] text-accent-ink hover:underline"
-          >
-            All investigations <ArrowUpRight className="h-3.5 w-3.5" />
-          </Link>
-        }
-      />
-
-      <div className="grid grid-cols-2 divide-x divide-y divide-border border-b border-border sm:grid-cols-4 sm:divide-y-0">
-        <ControlCenterTile
-          label="Ledger status"
-          value={balanced === undefined ? '—' : balanced ? 'Balanced' : 'Unbalanced'}
-          loading={stats.isLoading}
-          tone={balanced === undefined ? 'neutral' : balanced ? 'positive' : 'warning'}
-          to="/app/flight-recorder"
-        />
-        <ControlCenterTile
-          label="Open investigations"
-          value={formatInteger(openCaseCount)}
-          loading={openCases.isLoading}
-          tone={openCaseCount > 0 ? 'warning' : 'positive'}
-          to="/app/investigations?status=OPEN"
-        />
-        <ControlCenterTile
-          label="Control exceptions"
-          value={formatInteger(exceptionCount)}
-          loading={exceptions.isLoading}
-          tone={exceptionCount > 0 ? 'warning' : 'positive'}
-          to="/app/flight-recorder"
-        />
-        <ControlCenterTile
-          label="Potential duplicates"
-          value={formatInteger(duplicateCount)}
-          loading={exceptions.isLoading}
-          tone={duplicateCount > 0 ? 'warning' : 'positive'}
-          to="/app/flight-recorder"
-        />
-      </div>
-
-      {nothingToSee ? (
-        <EmptyState
-          icon={<ShieldCheck className="h-4 w-4" strokeWidth={1.6} />}
-          title="Nothing needs attention"
-          description="The ledger is balanced, no control exceptions are open, and there are no open investigations."
-        />
-      ) : (
-        <div className="grid grid-cols-1 divide-y divide-border lg:grid-cols-2 lg:divide-x lg:divide-y-0">
-          <div>
-            <div className="flex items-center justify-between px-4 py-2.5">
-              <p className="text-[0.8125rem] font-medium text-ink">Attention required</p>
-              {exceptionCount > 0 && <Badge tone="warning">{exceptionCount}</Badge>}
-            </div>
-            {exceptions.isLoading ? (
-              <div className="space-y-2 p-4">
-                <Skeleton className="h-10 w-full" />
-                <Skeleton className="h-10 w-full" />
-              </div>
-            ) : !exceptions.data || exceptions.data.length === 0 ? (
-              <p className="flex items-center gap-2 px-4 py-4 text-[0.8125rem] text-ink-3">
-                <ShieldAlert className="h-3.5 w-3.5" strokeWidth={1.7} />
-                No control exceptions open.
-              </p>
-            ) : (
-              <ul className="divide-y divide-border">
-                {exceptions.data.slice(0, 5).map((exception) => (
-                  <li key={exception.id} className="px-4 py-2.5">
-                    <div className="flex items-center gap-2">
-                      <Badge tone={exception.kind === 'POTENTIAL_DUPLICATE' ? 'warning' : 'negative'}>
-                        {exception.kind === 'POTENTIAL_DUPLICATE' ? 'Duplicate' : 'Integrity'}
-                      </Badge>
-                      <span className="truncate text-[0.8125rem] text-ink-2">{exception.title}</span>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-
-          <div>
-            <div className="flex items-center justify-between px-4 py-2.5">
-              <p className="text-[0.8125rem] font-medium text-ink">Recent investigations</p>
-              {recentCorrections.length > 0 && (
-                <span className="flex items-center gap-1 text-2xs text-ink-3">
-                  <PenLine className="h-3 w-3" strokeWidth={1.8} />
-                  {recentCorrections.length} recent correction{recentCorrections.length === 1 ? '' : 's'}
-                </span>
-              )}
-            </div>
-            {recentCases.isLoading ? (
-              <div className="space-y-2 p-4">
-                <Skeleton className="h-10 w-full" />
-                <Skeleton className="h-10 w-full" />
-              </div>
-            ) : !recentCases.data || recentCases.data.items.length === 0 ? (
-              <p className="flex items-center gap-2 px-4 py-4 text-[0.8125rem] text-ink-3">
-                <SearchCheck className="h-3.5 w-3.5" strokeWidth={1.7} />
-                No investigations opened yet.
-              </p>
-            ) : (
-              <ul className="divide-y divide-border">
-                {recentCases.data.items.map((investigationCase) => (
-                  <li key={investigationCase.id}>
-                    <Link
-                      to={`/app/investigations/${investigationCase.id}`}
-                      className="row-link flex items-center justify-between gap-3 px-4 py-2.5"
-                    >
-                      <div className="min-w-0">
-                        <span className="num text-[0.8125rem] font-medium text-ink">
-                          {investigationCase.case_number}
-                        </span>
-                        <span className="ml-2 truncate text-[0.8125rem] text-ink-3">
-                          {investigationCase.title}
-                        </span>
-                      </div>
-                      <Badge
-                        tone={
-                          investigationCase.status === 'OPEN'
-                            ? 'warning'
-                            : investigationCase.status === 'INVESTIGATING'
-                              ? 'accent'
-                              : 'positive'
-                        }
-                      >
-                        {investigationCase.status}
-                      </Badge>
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </div>
-      )}
-    </Panel>
-  );
-}
+/** A figure the server did not return is shown as "—", never as a misleading 0. */
+const stat = (value: number | undefined) => (value === undefined ? '—' : formatInteger(value));
 
 export default function DashboardPage() {
-  const navigate = useNavigate();
-  const stats = useStats(14);
-  const integrity = useIntegrity(true);
-  const recentTransactions = useTransactions({ limit: 6, offset: 0 });
+  const { user, can } = useAuth();
+  const toast = useToast();
+  const dashboard = useDashboard();
+  const onboarding = useOnboarding();
+  const loadDemo = useLoadDemoData();
+  const data = dashboard.data;
 
-  const currenciesInUse = stats.data?.trial_balance.map((row) => row.currency) ?? [];
-  const [chartCurrency, setChartCurrency] = useState<string | null>(null);
-  const activeCurrency = chartCurrency ?? currenciesInUse[0] ?? 'USD';
-  const balanced = stats.data?.ledger_balanced;
+  // Chart the currency that actually has the most activity.
+  const currency = useMemo(() => {
+    if (!data?.daily_volume.length) return 'USD';
+    const totals = new Map<string, number>();
+    for (const row of data.daily_volume) {
+      totals.set(row.currency, (totals.get(row.currency) ?? 0) + row.transaction_count);
+    }
+    return [...totals.entries()].sort((a, b) => b[1] - a[1])[0][0];
+  }, [data]);
+
+  const alertTotal = data
+    ? data.alert_counts.CRITICAL + data.alert_counts.HIGH + data.alert_counts.MEDIUM + data.alert_counts.LOW
+    : 0;
+  const recon = data?.latest_reconciliation ?? null;
+  const integrityOk = data ? data.ledger_balanced && data.integrity_all_passed : null;
+  const showChecklist =
+    onboarding.data && onboarding.data.completed < onboarding.data.total && can('org:manage');
 
   return (
     <>
       <PageHeader
-        title="Dashboard"
-        description="A summary of the ledger, drawn directly from posted transactions and entries."
-        actions={
-          <Button onClick={() => integrity.refetch()} icon={<ShieldCheck className="h-4 w-4" strokeWidth={1.8} />}>
-            Verify integrity
-          </Button>
+        title={`Welcome${user?.name ? `, ${user.name.split('@')[0]}` : ''}`}
+        description={
+          user?.role === 'AUDITOR'
+            ? 'Read-only view of the ledger, reconciliation and audit trail.'
+            : 'What needs attention across the ledger, reconciliation and approvals.'
         }
       />
 
       <div className="space-y-6 px-5 py-6 sm:px-8">
-        <ControlCenter />
-
-        {stats.isError ? (
+        {dashboard.isError && (
           <Panel>
-            <ErrorState error={stats.error} onRetry={() => stats.refetch()} context="the dashboard" />
+            <ErrorState error={dashboard.error} onRetry={() => dashboard.refetch()} context="the dashboard" />
           </Panel>
-        ) : (
-          <>
-            <div className="grid grid-cols-1 gap-px border border-border bg-border sm:grid-cols-2 xl:grid-cols-4">
-              <StatTile
-                label="Total accounts"
-                value={stats.data ? formatInteger(stats.data.account_count) : '—'}
-                loading={stats.isLoading}
-                meta={stats.data && `${stats.data.active_account_count} active`}
-              />
-              <StatTile
-                label="Transactions posted"
-                value={stats.data ? formatInteger(stats.data.transaction_count) : '—'}
-                loading={stats.isLoading}
-                meta={stats.data && `${stats.data.reversed_transaction_count} reversed`}
-              />
-              <StatTile
-                label="Ledger entries"
-                value={stats.data ? formatInteger(stats.data.entry_count) : '—'}
-                loading={stats.isLoading}
-                meta="Append-only"
-              />
-              <div className="hover-lift relative z-0 hover:z-10 border border-border bg-surface px-5 py-4">
-                <p className="caption">System status</p>
-                <p
-                  className={cn(
-                    'mt-1 flex items-center gap-2 text-2xl font-semibold',
-                    balanced === undefined ? 'text-ink-3' : balanced ? 'text-positive' : 'text-negative',
-                  )}
-                >
-                  <StatusDot tone={balanced === undefined ? 'neutral' : balanced ? 'positive' : 'negative'} />
-                  {balanced === undefined ? '—' : balanced ? 'Balanced' : 'Unbalanced'}
-                </p>
-                <p className="mt-1 text-[0.8125rem] text-ink-3">
-                  {stats.data ? `${stats.data.trial_balance.length} currencies checked` : ' '}
-                </p>
-              </div>
-            </div>
+        )}
 
-            <LedgerBriefWidget />
+        <div className="grid grid-cols-2 gap-px bg-border lg:grid-cols-4">
+          <Tile
+            label="Accounts"
+            value={stat(data?.account_count)}
+            meta={data && `${formatInteger(data.active_account_count)} active`}
+            loading={dashboard.isLoading}
+            to="/app/accounts"
+          />
+          <Tile
+            label="Transactions, last 24h"
+            value={stat(data?.transactions_last_24h)}
+            meta={data && `${formatInteger(data.transaction_count)} all time`}
+            loading={dashboard.isLoading}
+            to="/app/transactions"
+          />
+          <Tile
+            label="Awaiting approval"
+            value={stat(data?.pending_approvals)}
+            meta="Maker-checker queue"
+            loading={dashboard.isLoading}
+            tone={data && data.pending_approvals > 0 ? 'warning' : undefined}
+            to={can('drafts:read') ? '/app/approvals' : undefined}
+          />
+          <Tile
+            label="Open investigations"
+            value={stat(data?.open_investigations)}
+            meta={alertTotal > 0 ? `${alertTotal} active alert${alertTotal === 1 ? '' : 's'}` : 'No active alerts'}
+            loading={dashboard.isLoading}
+            tone={data && data.open_investigations > 0 ? 'warning' : undefined}
+            to="/app/investigations"
+          />
+        </div>
 
-            <div className="grid grid-cols-1 gap-6 xl:grid-cols-5">
-              <Panel className="xl:col-span-3">
-                <PanelHeader
-                  title="Posting volume"
-                  description="Value posted per day, last 14 days"
-                  actions={
-                    currenciesInUse.length > 1 && (
-                      <div className="flex items-center gap-1">
-                        {currenciesInUse.map((code) => (
-                          <button
-                            key={code}
-                            type="button"
-                            onClick={() => setChartCurrency(code)}
-                            className={cn(
-                              'num rounded-xs px-2 py-1 text-[0.8125rem] transition-colors',
-                              code === activeCurrency
-                                ? 'bg-accent-soft text-accent-ink'
-                                : 'text-ink-3 hover:text-ink',
-                            )}
-                          >
-                            {code}
-                          </button>
-                        ))}
-                      </div>
-                    )
-                  }
-                />
-                <div className="px-4 py-4">
-                  {stats.isLoading ? <Skeleton className="h-[180px] w-full" /> : <VolumeChart currency={activeCurrency} />}
-                </div>
-              </Panel>
-
-              <Panel className="xl:col-span-2">
-                <PanelHeader title="Trial balance" description="Debits vs. credits, whole ledger" />
-                {stats.data && stats.data.trial_balance.length > 0 ? (
-                  <div className="divide-y divide-border">
-                    {stats.data.trial_balance.map((row) => (
-                      <div key={row.currency} className="flex items-center justify-between px-4 py-3">
-                        <span className="num text-[0.9375rem] font-medium text-ink">{row.currency}</span>
-                        <div className="text-right">
-                          <p className="num text-[0.875rem] text-ink">
-                            {formatMinor(row.debits.amount_minor, row.currency)} /{' '}
-                            {formatMinor(row.credits.amount_minor, row.currency)}
-                          </p>
-                          <p
-                            className={cn(
-                              'text-[0.8125rem]',
-                              row.balanced ? 'text-positive' : 'text-negative',
-                            )}
-                          >
-                            {row.balanced ? 'Balanced' : 'Out of balance'}
-                          </p>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <EmptyState title="No entries yet" description="Post a transaction to see the trial balance." />
-                )}
-
-                {integrity.data && (
-                  <div className="border-t border-border px-4 py-3">
-                    <p className="flex items-center justify-between text-[0.8125rem]">
-                      <span className="text-ink-3">Cached balances vs. ledger entries</span>
-                      <span className={integrity.data.cache_consistent ? 'text-positive' : 'text-negative'}>
-                        {integrity.data.cache_consistent ? 'Consistent' : 'Divergent'}
-                      </span>
-                    </p>
-                  </div>
-                )}
-              </Panel>
-            </div>
-
+        {data && (
+          <div className="grid gap-6 xl:grid-cols-2">
             <Panel>
               <PanelHeader
-                title="Recent transactions"
-                actions={
-                  <Link
-                    to="/app/transactions"
-                    className="inline-flex items-center gap-1 text-[0.8125rem] text-accent-ink hover:underline"
-                  >
-                    View all <ArrowUpRight className="h-3.5 w-3.5" />
-                  </Link>
-                }
+                title={`Posted value, last ${data.volume_window_days} days`}
+                description="Total debits of non-reversed transactions (equal to total credits), per currency"
               />
-              {recentTransactions.isError ? (
-                <ErrorState error={recentTransactions.error} context="transactions" />
-              ) : recentTransactions.isLoading ? (
-                <div className="space-y-3 p-4">
-                  {Array.from({ length: 4 }).map((_, i) => (
-                    <Skeleton key={i} className="h-5 w-full" />
+              {data.posted_volume.length > 0 ? (
+                <ul className="divide-y divide-border">
+                  {data.posted_volume.map((row) => (
+                    <li key={row.currency} className="flex items-center justify-between px-4 py-3">
+                      <span className="text-[0.875rem] text-ink-2">
+                        {row.currency} · {formatInteger(row.transaction_count)} transaction
+                        {row.transaction_count === 1 ? '' : 's'}
+                      </span>
+                      <span className="num text-[0.9375rem] font-semibold text-ink">
+                        {formatMinor(row.posted_minor, row.currency, undefined, true)}
+                      </span>
+                    </li>
                   ))}
-                </div>
-              ) : recentTransactions.data?.items.length === 0 ? (
-                <EmptyState
-                  title="No transactions yet"
-                  description="Your posted transactions will appear here."
-                  action={
-                    <Button variant="primary" size="sm" onClick={() => navigate('/app/transactions/new')}>
-                      Create transaction
-                    </Button>
-                  }
-                />
+                </ul>
               ) : (
-                <TableScroller>
-                  <Table>
-                    <THead>
-                      <th className="th">Description</th>
-                      <th className="th">Date</th>
-                      <th className="th text-right">Amount</th>
-                      <th className="th">Status</th>
-                    </THead>
-                    <tbody>
-                      {recentTransactions.data?.items.map((transaction) => (
-                        <tr key={transaction.id} className="row-link">
-                          <td className="td">
-                            <Link
-                              to={`/app/transactions/${transaction.id}`}
-                              className="font-medium text-ink hover:text-accent-ink"
-                            >
-                              {transaction.description}
-                            </Link>
-                            <span className="num ml-2 text-[0.8125rem] text-ink-3">
-                              {transaction.reference}
-                            </span>
-                          </td>
-                          <td className="td whitespace-nowrap text-ink-2">
-                            {formatDate(transaction.posted_at)}
-                          </td>
-                          <td className="td text-right">
-                            <Amount money={transaction.total_debits} showCurrency />
-                          </td>
-                          <td className="td">
-                            <TransactionStatusBadge status={transaction.status} kind={transaction.kind} />
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </Table>
-                </TableScroller>
+                <EmptyState title="Nothing posted in this window" />
               )}
             </Panel>
-          </>
+            <Panel>
+              <PanelHeader
+                title="Failed or rejected operations, last 24 hours"
+                description="Counted from the audit trail - nothing was posted by any of these"
+              />
+              <dl className="grid grid-cols-3 gap-px bg-border text-[0.8125rem]">
+                {(
+                  [
+                    ['Postings rejected', data.failed_operations_24h.rejected_postings, '/app/audit?event_type=transaction.post_failed'],
+                    ['Approvals refused by ledger', data.failed_operations_24h.refused_approvals, '/app/audit?event_type=draft.approval_failed'],
+                    ['Drafts rejected', data.failed_operations_24h.rejected_drafts, '/app/audit?event_type=draft.rejected'],
+                  ] as const
+                ).map(([label, count, href]) => (
+                  <div key={label} className="bg-surface px-4 py-3">
+                    <dt className="text-ink-3">{label}</dt>
+                    <dd className={cn('num mt-0.5 text-lg font-semibold', count > 0 ? 'text-warning' : 'text-ink')}>
+                      {count > 0 && can('audit:read') ? (
+                        <Link to={href.replace('/app', '/app')} className="hover:underline">
+                          {formatInteger(count)}
+                        </Link>
+                      ) : (
+                        formatInteger(count)
+                      )}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            </Panel>
+          </div>
         )}
+
+        {showChecklist && onboarding.data && (
+          <div className="space-y-3">
+            <OnboardingChecklist onboarding={onboarding.data} />
+            {!onboarding.data.steps.find((s) => s.key === 'external_data')?.done && (
+              <div className="flex flex-wrap items-center gap-3 text-[0.8125rem] text-ink-2">
+                <Button
+                  size="sm"
+                  disabled={loadDemo.isPending}
+                  onClick={() =>
+                    loadDemo.mutate(undefined, {
+                      onSuccess: (result) => toast.success('Demo data loaded', result.message),
+                      onError: (error) => toast.apiError(error),
+                    })
+                  }
+                >
+                  Load demo reconciliation data
+                </Button>
+                <span>
+                  Creates two demo accounts and a small reconciliation scenario so you can explore
+                  without real data.
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="grid gap-6 xl:grid-cols-3">
+          {/* integrity & health */}
+          <Panel>
+            <PanelHeader title="Ledger integrity" description="Re-verified from ledger entries on every load" />
+            <div className="space-y-3 px-4 py-4">
+              {dashboard.isLoading ? (
+                <Skeleton className="h-16 w-full" />
+              ) : data ? (
+                <>
+                  <div className="flex items-center gap-3">
+                    <span
+                      className={cn(
+                        'flex h-9 w-9 items-center justify-center rounded-md border',
+                        integrityOk
+                          ? 'border-positive/30 bg-positive-soft text-positive'
+                          : 'border-negative/30 bg-negative-soft text-negative',
+                      )}
+                    >
+                      {integrityOk ? <ShieldCheck className="h-4 w-4" /> : <ShieldAlert className="h-4 w-4" />}
+                    </span>
+                    <div>
+                      <p className="text-[0.9375rem] font-medium text-ink">
+                        {integrityOk ? 'Ledger is consistent' : 'Integrity check failing'}
+                      </p>
+                      <p className="text-[0.8125rem] text-ink-2">
+                        Debits {data.ledger_balanced ? 'equal' : 'do NOT equal'} credits across the ledger.
+                      </p>
+                    </div>
+                  </div>
+                  {data.integrity_checks_failed.length > 0 && (
+                    <ul className="list-inside list-disc text-[0.8125rem] text-negative">
+                      {data.integrity_checks_failed.map((name) => (
+                        <li key={name}>{name}</li>
+                      ))}
+                    </ul>
+                  )}
+                  <div className="flex items-center justify-between border-t border-border pt-3 text-[0.8125rem]">
+                    <span className="flex items-center gap-2 text-ink-2">
+                      <StatusDot tone={data.database === 'up' ? 'positive' : 'negative'} />
+                      Database
+                    </span>
+                    <span className={data.database === 'up' ? 'text-ink-3' : 'text-negative'}>
+                      {data.database === 'up' ? 'Reachable' : 'Unreachable'}
+                    </span>
+                  </div>
+                  {can('system:read') && (
+                    <Link
+                      to="/app/system"
+                      className="inline-flex items-center gap-1 text-[0.8125rem] font-medium text-accent-ink hover:underline"
+                    >
+                      System health <ArrowUpRight className="h-3 w-3" />
+                    </Link>
+                  )}
+                </>
+              ) : null}
+            </div>
+          </Panel>
+
+          {/* reconciliation */}
+          <Panel>
+            <PanelHeader
+              title="Reconciliation"
+              description={recon ? `Run #${recon.run_number}, ${formatRelative(recon.run_at)}` : 'No run yet'}
+              actions={
+                <Link to="/app/reconciliation" className="text-[0.8125rem] font-medium text-accent-ink hover:underline">
+                  Open workspace
+                </Link>
+              }
+            />
+            {dashboard.isLoading ? (
+              <div className="px-4 py-4">
+                <Skeleton className="h-20 w-full" />
+              </div>
+            ) : recon ? (
+              <dl className="grid grid-cols-2 gap-px bg-border text-[0.8125rem]">
+                {[
+                  ['Matched', recon.matched, 'text-positive'],
+                  ['Amount mismatch', recon.mismatched, recon.mismatched ? 'text-negative' : 'text-ink'],
+                  ['Missing in ledger', recon.missing_internal, recon.missing_internal ? 'text-warning' : 'text-ink'],
+                  ['Missing externally', recon.missing_external, recon.missing_external ? 'text-warning' : 'text-ink'],
+                  ['Ambiguous', recon.ambiguous, recon.ambiguous ? 'text-accent-ink' : 'text-ink'],
+                  ['External records', recon.external_count, 'text-ink'],
+                ].map(([label, value, tone]) => (
+                  <div key={label as string} className="bg-surface px-4 py-3">
+                    <dt className="text-ink-3">{label}</dt>
+                    <dd className={cn('num mt-0.5 text-lg font-semibold', tone as string)}>
+                      {formatInteger(value as number)}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            ) : (
+              <EmptyState
+                title="No reconciliation has been run"
+                description="Import external records and run a reconciliation to compare them with the ledger."
+              />
+            )}
+          </Panel>
+
+          {/* alerts */}
+          <Panel>
+            <PanelHeader
+              title="Alerts"
+              description={alertTotal ? `${alertTotal} active` : 'Nothing needs attention'}
+              actions={
+                can('alerts:read') && (
+                  <Link to="/app/alerts" className="text-[0.8125rem] font-medium text-accent-ink hover:underline">
+                    View all
+                  </Link>
+                )
+              }
+            />
+            {dashboard.isLoading ? (
+              <div className="px-4 py-4">
+                <Skeleton className="h-20 w-full" />
+              </div>
+            ) : data && data.top_alerts.length > 0 ? (
+              <ul className="divide-y divide-border">
+                {data.top_alerts.map((alert) => (
+                  <li key={alert.id} className="px-4 py-3">
+                    <div className="flex items-center gap-2">
+                      <SeverityBadge severity={alert.severity} />
+                      <span className="truncate text-[0.875rem] font-medium text-ink">{alert.title}</span>
+                    </div>
+                    <p className="mt-1 line-clamp-2 text-[0.8125rem] text-ink-2">{alert.detail}</p>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <EmptyState
+                title="No active alerts"
+                description="Alerts are deterministic rules over real activity - retries, failed postings, large or repeated reversals, reconciliation exceptions."
+              />
+            )}
+          </Panel>
+        </div>
+
+        <div className="grid gap-6 xl:grid-cols-3">
+          <Panel className="xl:col-span-2">
+            <PanelHeader
+              title="Posted value, last 14 days"
+              description={`${currency} - total debits of non-reversed transactions`}
+            />
+            <div className="px-3 py-3">
+              {dashboard.isLoading ? (
+                <Skeleton className="h-44 w-full" />
+              ) : data && data.daily_volume.length > 0 ? (
+                <VolumeChart rows={data.daily_volume} currency={currency} />
+              ) : (
+                <EmptyState
+                  title="No activity in the last 14 days"
+                  description="Posted transactions will appear here."
+                />
+              )}
+            </div>
+          </Panel>
+
+          {can('ai:use') ? (
+            <LedgerBriefWidget />
+          ) : (
+            <Panel>
+              <PanelHeader
+                title="Open investigations"
+                description="Most recent cases that are not resolved"
+              />
+              {data && data.recent_investigations.length > 0 ? (
+                <ul className="divide-y divide-border">
+                  {data.recent_investigations.map((c) => (
+                    <li key={c.id} className="px-4 py-3">
+                      <Link to={`/app/investigations/${c.id}`} className="block hover:underline">
+                        <span className="num text-2xs text-ink-3">{c.case_number}</span>
+                        <p className="truncate text-[0.875rem] font-medium text-ink">{c.title}</p>
+                      </Link>
+                      <div className="mt-1 flex items-center gap-1.5">
+                        <CaseStatusBadge status={c.status} />
+                        <PriorityBadge priority={c.priority} />
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <EmptyState title="No open investigations" />
+              )}
+            </Panel>
+          )}
+        </div>
+
+        <div className="grid gap-6 xl:grid-cols-2">
+          <Panel>
+            <PanelHeader
+              title="Recent transactions"
+              actions={
+                <Link to="/app/transactions" className="text-[0.8125rem] font-medium text-accent-ink hover:underline">
+                  All transactions
+                </Link>
+              }
+            />
+            {dashboard.isLoading ? (
+              <div className="px-4 py-4">
+                <Skeleton className="h-32 w-full" />
+              </div>
+            ) : data && data.recent_transactions.length > 0 ? (
+              <TableScroller>
+                <Table>
+                  <THead>
+                    <th className="px-4 py-2 text-xs font-medium text-ink-3">Reference</th>
+                    <th className="px-4 py-2 text-xs font-medium text-ink-3">Posted</th>
+                    <th className="px-4 py-2 text-right text-xs font-medium text-ink-3">Amount</th>
+                    <th className="px-4 py-2 text-xs font-medium text-ink-3">Status</th>
+                  </THead>
+                  <tbody className="divide-y divide-border">
+                    {data.recent_transactions.map((t) => (
+                      <tr key={t.id} className="hover:bg-surface-2">
+                        <td className="px-4 py-2">
+                          <Link to={`/app/transactions/${t.id}`} className="num text-[0.8125rem] text-ink hover:underline">
+                            {t.reference}
+                          </Link>
+                          <p className="max-w-[16rem] truncate text-xs text-ink-3">{t.description}</p>
+                        </td>
+                        <td className="px-4 py-2 text-[0.8125rem] text-ink-2">{formatDateTime(t.posted_at)}</td>
+                        <td className="px-4 py-2 text-right">
+                          <Amount money={t.amount} showCurrency />
+                        </td>
+                        <td className="px-4 py-2">
+                          <TransactionStatusBadge status={t.status as 'POSTED' | 'REVERSED'} kind={t.kind as 'STANDARD' | 'REVERSAL'} />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </Table>
+              </TableScroller>
+            ) : (
+              <EmptyState
+                title="No transactions yet"
+                description="Post your first double-entry transaction to see activity here."
+                action={
+                  (can('transactions:post') || can('drafts:create')) && (
+                    <Link to="/app/transactions/new">
+                      <Button variant="primary" size="sm">
+                        New transaction
+                      </Button>
+                    </Link>
+                  )
+                }
+              />
+            )}
+          </Panel>
+
+          <Panel>
+            <PanelHeader
+              title="Recent audit activity"
+              description="Real, append-only events"
+              actions={
+                can('audit:read') && (
+                  <Link to="/app/audit" className="text-[0.8125rem] font-medium text-accent-ink hover:underline">
+                    Audit log
+                  </Link>
+                )
+              }
+            />
+            {dashboard.isLoading ? (
+              <div className="px-4 py-4">
+                <Skeleton className="h-32 w-full" />
+              </div>
+            ) : data && data.recent_audit.length > 0 ? (
+              <ul className="divide-y divide-border">
+                {data.recent_audit.map((event) => (
+                  <li key={event.id} className="flex items-center justify-between gap-3 px-4 py-2.5">
+                    <div className="min-w-0">
+                      <AuditActionBadge eventType={event.event_type} />
+                      <p className="mt-1 truncate text-xs text-ink-3">
+                        {event.actor} · {formatDateTime(event.created_at)}
+                      </p>
+                    </div>
+                    {event.resource_type && (
+                      <Badge tone="neutral" className="shrink-0">
+                        {event.resource_type}
+                      </Badge>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <EmptyState title="No audit activity yet" />
+            )}
+          </Panel>
+        </div>
       </div>
     </>
   );

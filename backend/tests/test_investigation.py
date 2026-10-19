@@ -845,9 +845,7 @@ def test_control_exceptions_include_duplicate_candidates(db, cash_and_revenue):
     assert any(e.kind == "POTENTIAL_DUPLICATE" for e in exceptions)
 
 
-def test_control_exceptions_are_empty_on_a_healthy_ledger_with_no_duplicates(
-    db, cash_and_revenue
-):
+def test_control_exceptions_are_empty_on_a_healthy_ledger_with_no_duplicates(db, cash_and_revenue):
     cash, revenue = cash_and_revenue
     post(db, cash, revenue, 100_00)
 

@@ -438,7 +438,13 @@ export interface ControlException {
 // live from the ledger by the same functions the Flight Recorder uses.
 
 export type InvestigationStatus = 'OPEN' | 'INVESTIGATING' | 'RESOLVED';
-export type InvestigationSource = 'MANUAL' | 'DUPLICATE' | 'INTEGRITY' | 'FLIGHT_RECORDER';
+export type InvestigationSource =
+  | 'MANUAL'
+  | 'DUPLICATE'
+  | 'INTEGRITY'
+  | 'FLIGHT_RECORDER'
+  | 'RECONCILIATION';
+export type InvestigationPriority = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 
 export interface InvestigationCase {
   id: string;
@@ -448,6 +454,8 @@ export interface InvestigationCase {
   status: InvestigationStatus;
   source: InvestigationSource;
   source_reference: string | null;
+  priority: InvestigationPriority;
+  reconciliation_result_id: string | null;
   account: AccountSummary | null;
   window_from: string | null;
   window_to: string | null;
@@ -464,6 +472,7 @@ export interface InvestigationCaseCreate {
   issue_summary: string;
   source?: InvestigationSource;
   source_reference?: string | null;
+  priority?: InvestigationPriority;
   account_id?: string | null;
   window_from?: string | null;
   window_to?: string | null;
@@ -475,6 +484,9 @@ export interface InvestigationCaseEvidence {
   duplicate_candidates: DuplicateGroup[];
   integrity: IntegrityCheck[];
   lineage: TransactionLineage | null;
+  /** The reconciliation exception this case was opened from, if any. */
+  reconciliation: ReconciliationResult | null;
+  audit_events: AuditEvent[];
 }
 
 // --- external reconciliation ----------------------------------------------
@@ -512,6 +524,16 @@ export interface ReconciliationResult {
   internal_transaction_id: string | null;
   internal_reference: string | null;
   internal_amount: Money | null;
+  investigation_id: string | null;
+  investigation_case_number: string | null;
+  latest_decision: {
+    id: string;
+    decision: 'CONFIRMED_MATCH' | 'NOT_A_MATCH';
+    internal_transaction_id: string | null;
+    reason: string;
+    decided_by: string;
+    created_at: string;
+  } | null;
 }
 
 export interface ReconciliationRunSummary {

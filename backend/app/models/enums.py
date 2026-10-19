@@ -93,3 +93,43 @@ class ReconciliationStatus(StrEnum):
     MISSING_INTERNAL = "MISSING_INTERNAL"
     MISSING_EXTERNAL = "MISSING_EXTERNAL"
     AMBIGUOUS_INTERNAL_MATCH = "AMBIGUOUS_INTERNAL_MATCH"
+
+
+class UserRole(StrEnum):
+    """Coarse roles. What each role may do lives in `app.core.permissions` -
+    enforced server-side on every request, never inferred from the UI.
+
+    OWNER created the organization (always at least one); ADMIN administers it;
+    FINANCE and OPERATIONS are the two kinds of operator (move money /
+    investigate and reconcile); AUDITOR is read-only."""
+
+    OWNER = "OWNER"
+    ADMIN = "ADMIN"
+    FINANCE = "FINANCE"
+    OPERATIONS = "OPERATIONS"
+    AUDITOR = "AUDITOR"
+
+
+class DraftStatus(StrEnum):
+    """Maker-checker lifecycle of a *proposed* transaction. A draft is never
+    a ledger record: only an approval turns it into one, through the
+    existing posting engine."""
+
+    DRAFT = "DRAFT"
+    PENDING_APPROVAL = "PENDING_APPROVAL"
+    POSTED = "POSTED"
+    REJECTED = "REJECTED"
+
+
+class InvestigationPriority(StrEnum):
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+    CRITICAL = "CRITICAL"
+
+
+class MatchDecision(StrEnum):
+    """A reviewer's conclusion on a reconciliation result."""
+
+    CONFIRMED_MATCH = "CONFIRMED_MATCH"
+    NOT_A_MATCH = "NOT_A_MATCH"

@@ -33,10 +33,11 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+from app.db.tenancy import TenantMixin
 from app.models.enums import EntryDirection, ReconciliationStatus
 
 
-class ExternalTransaction(Base):
+class ExternalTransaction(TenantMixin, Base):
     """A record from an external system (a payment processor, a bank feed).
 
     Immutable evidence, not a source of financial truth: nothing here ever
@@ -48,7 +49,9 @@ class ExternalTransaction(Base):
     __tablename__ = "external_transactions"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    seq: Mapped[int] = mapped_column(BigInteger, Identity(always=False), nullable=False, unique=True)
+    seq: Mapped[int] = mapped_column(
+        BigInteger, Identity(always=False), nullable=False, unique=True
+    )
 
     source_system: Mapped[str] = mapped_column(String(80), nullable=False)
     external_id: Mapped[str] = mapped_column(String(120), nullable=False)
@@ -70,7 +73,12 @@ class ExternalTransaction(Base):
     )
 
     __table_args__ = (
-        UniqueConstraint("source_system", "external_id", name="uq_external_transactions_source_external_id"),
+        UniqueConstraint(
+            "organization_id",
+            "source_system",
+            "external_id",
+            name="uq_external_transactions_source_external_id",
+        ),
         Index("ix_external_transactions_external_id", "external_id"),
     )
 
@@ -78,7 +86,7 @@ class ExternalTransaction(Base):
         return f"<ExternalTransaction {self.source_system}:{self.external_id}>"
 
 
-class ReconciliationRun(Base):
+class ReconciliationRun(TenantMixin, Base):
     """One reconciliation pass: a repeatable, re-runnable comparison snapshot.
 
     Counts are denormalised onto the run for cheap listing, but are always
@@ -89,7 +97,9 @@ class ReconciliationRun(Base):
     __tablename__ = "reconciliation_runs"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    seq: Mapped[int] = mapped_column(BigInteger, Identity(always=False), nullable=False, unique=True)
+    seq: Mapped[int] = mapped_column(
+        BigInteger, Identity(always=False), nullable=False, unique=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -109,7 +119,7 @@ class ReconciliationRun(Base):
         return f"<ReconciliationRun #{self.seq}>"
 
 
-class ReconciliationResult(Base):
+class ReconciliationResult(TenantMixin, Base):
     """One outcome within one run - either an external record compared
     against the ledger, or (for MISSING_EXTERNAL) a live internal
     transaction with no external evidence.

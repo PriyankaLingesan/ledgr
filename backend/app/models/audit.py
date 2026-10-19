@@ -14,10 +14,14 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
+from app.db.tenancy import TenantMixin
 
 
-class AuditEvent(Base):
+class AuditEvent(TenantMixin, Base):
     __tablename__ = "audit_events"
+    # Events about no known tenant (a failed sign-in for an unknown email) have
+    # a NULL organization and are invisible to every organization's queries.
+    allow_null_tenant = True
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     seq: Mapped[int] = mapped_column(

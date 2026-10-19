@@ -45,13 +45,25 @@ from alembic.config import Config  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from alembic import command  # noqa: E402
+from app.core.ratelimit import limiter  # noqa: E402
 from app.db.session import SessionLocal, engine  # noqa: E402
+from app.db.tenancy import bind_organization, mark_unscoped  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models.enums import AccountType  # noqa: E402
+from app.models.enums import AccountType, UserRole  # noqa: E402
+from app.models.user import Organization  # noqa: E402
 from app.services import accounts as account_service  # noqa: E402
 from app.services import auth as auth_service  # noqa: E402
+from app.services import users as user_service  # noqa: E402
+
+TEST_PASSWORD = "correct-horse-battery"
 
 TABLES = (
+    "investigation_notes",
+    "reconciliation_decisions",
+    "transaction_drafts",
+    "user_sessions",
+    "users",
+    "organizations",
     "audit_events",
     "idempotency_keys",
     "investigations",
@@ -86,21 +98,97 @@ def migrated_schema():
 
 
 @pytest.fixture(autouse=True)
-def clean_tables():
+def clean_tables(request):
     """TRUNCATE between tests.
 
     TRUNCATE fires no row-level triggers, so it clears the append-only tables
     without needing to disable the guards that protect them.
+
+    A module marked `shared_world` builds one expensive world (for example the
+    Meridian demonstration, ~20 s to seed) once and runs several tests against
+    it, so it is exempt; its own module-scoped fixture truncates before seeding.
     """
+    if request.node.get_closest_marker("shared_world"):
+        yield
+        return
     with engine.connect() as conn:
         conn.execute(sa.text(f"TRUNCATE {', '.join(TABLES)} RESTART IDENTITY CASCADE"))
         conn.commit()
     yield
 
 
-@pytest.fixture
-def db():
+_current = {"org_id": None}
+
+
+def new_session(organization_id=None):
+    """A session scoped to the current test's organization (or another one).
+
+    Every ledger table is tenant-scoped, so a session without an organization
+    sees nothing - tests that open their own sessions use this helper.
+    """
     session = SessionLocal()
+    bind_organization(session, organization_id or _current["org_id"])
+    return session
+
+
+def current_org_id():
+    return _current["org_id"]
+
+
+def truncate_everything():
+    """Empty every table (module-scoped fixtures of `shared_world` modules)."""
+    with engine.connect() as conn:
+        conn.execute(sa.text(f"TRUNCATE {', '.join(TABLES)} RESTART IDENTITY CASCADE"))
+        conn.commit()
+
+
+def make_organization(name: str = "Test Org"):
+    with SessionLocal() as session:
+        mark_unscoped(session)
+        organization = Organization(name=name, base_currency="USD")
+        session.add(organization)
+        session.commit()
+        return organization
+
+
+@pytest.fixture(autouse=True)
+def _no_live_ai(monkeypatch):
+    """The suite must never reach a real model, whatever the developer's `.env` holds.
+
+    A key in `backend/.env` makes `get_provider()` return a live provider, so any test that
+    touches an AI route without patching it would send a real (billable) request. Blank the
+    key for every test; tests that exercise AI behaviour patch `get_provider` themselves.
+    """
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ai_api_key", "")
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    """The limiter is in-process state: one test's logins must not throttle the next."""
+    limiter.reset()
+    yield
+    limiter.reset()
+
+
+@pytest.fixture(autouse=True)
+def org(clean_tables):
+    """The primary organization for this test (what the default fixtures act as)."""
+    organization = make_organization("Test Org")
+    _current["org_id"] = organization.id
+    return organization
+
+
+@pytest.fixture
+def other_org(org):
+    """A second, independent organization - for isolation tests."""
+    return make_organization("Other Org")
+
+
+@pytest.fixture
+def db(org):
+    session = new_session(org.id)
     try:
         yield session
     finally:
@@ -109,13 +197,15 @@ def db():
 
 
 @pytest.fixture
-def api_key():
+def api_key(org):
     """Mints a real, DB-backed API key so HTTP-level tests authenticate the
     same way a real caller would - not a bypass, the actual auth path.
     """
     session = SessionLocal()
     try:
-        record, raw_key = auth_service.create_api_key(session, label="test-client")
+        record, raw_key = auth_service.create_api_key(
+            session, label="test-client", organization_id=org.id
+        )
         yield record, raw_key
     finally:
         session.close()
@@ -165,3 +255,102 @@ def cash_and_revenue(make_account):
     cash = make_account("CASH.USD", AccountType.ASSET)
     revenue = make_account("REV.USD", AccountType.REVENUE)
     return cash, revenue
+
+
+@pytest.fixture
+def make_user(db, org):
+    """Create a real user through the service layer (hashed password and all)."""
+
+    def _make(role: UserRole, email: str | None = None, password: str = TEST_PASSWORD):
+        return user_service.create_user(
+            db,
+            organization_id=org.id,
+            actor_role=UserRole.OWNER,
+            email=email or f"{role.value.lower()}@example.com",
+            full_name=f"{role.value.title()} Tester",
+            password=password,
+            role=role,
+            actor="pytest",
+        )
+
+    return _make
+
+
+@pytest.fixture
+def user_client(make_user):
+    """A TestClient signed in as a real user of the given role - through the
+    actual login endpoint, so the session path is what gets exercised."""
+    opened: list[TestClient] = []
+
+    def _make(role: UserRole, email: str | None = None) -> TestClient:
+        user = make_user(role, email=email)
+        test_client = TestClient(app)
+        response = test_client.post(
+            "/api/v1/auth/login", json={"email": user.email, "password": TEST_PASSWORD}
+        )
+        assert response.status_code == 200, response.text
+        test_client.headers["Authorization"] = f"Bearer {response.json()['access_token']}"
+        opened.append(test_client)
+        return test_client
+
+    yield _make
+    for c in opened:
+        c.close()
+
+
+@pytest.fixture
+def role_client(db, org):
+    """A TestClient authenticating with an API key of the given role."""
+    opened: list[TestClient] = []
+
+    def _make(role: UserRole, label: str | None = None) -> TestClient:
+        _, raw = auth_service.create_api_key(
+            db, label=label or f"{role.value.lower()}-key", role=role, organization_id=org.id
+        )
+        test_client = TestClient(app)
+        test_client.headers["Authorization"] = f"Bearer {raw}"
+        opened.append(test_client)
+        return test_client
+
+    yield _make
+    for c in opened:
+        c.close()
+
+
+@pytest.fixture
+def org_client():
+    """Factory: a TestClient authenticating as an API key of `role` in `organization`."""
+    opened: list[TestClient] = []
+
+    def _make(organization, role: UserRole = UserRole.ADMIN, label: str | None = None):
+        with SessionLocal() as session:
+            _, raw = auth_service.create_api_key(
+                session,
+                label=label or f"{organization.name}-{role.value}".lower().replace(" ", "-"),
+                role=role,
+                organization_id=organization.id,
+            )
+        test_client = TestClient(app)
+        test_client.headers["Authorization"] = f"Bearer {raw}"
+        opened.append(test_client)
+        return test_client
+
+    yield _make
+    for c in opened:
+        c.close()
+
+
+@pytest.fixture
+def org_session():
+    """Factory: a database session scoped to the given organization."""
+    opened = []
+
+    def _make(organization):
+        session = new_session(organization.id)
+        opened.append(session)
+        return session
+
+    yield _make
+    for session in opened:
+        session.rollback()
+        session.close()

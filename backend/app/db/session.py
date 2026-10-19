@@ -5,6 +5,7 @@ blocks forever on a row lock is a production incident, so the database is told
 to give up first and surface a retryable error.
 """
 
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 
@@ -13,6 +14,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import settings
+from app.db.tenancy import bind_organization, mark_unscoped
 
 engine: Engine = create_engine(
     settings.database_url,
@@ -43,13 +45,22 @@ SessionLocal = sessionmaker(
 
 
 @contextmanager
-def session_scope() -> Iterator[Session]:
+def session_scope(
+    organization_id: uuid.UUID | None = None, *, unscoped: bool = False
+) -> Iterator[Session]:
     """Standalone unit of work for scripts and out-of-request work.
 
     Used by the idempotency service, which deliberately needs a *second*
-    connection so its claim can commit independently of the ledger write.
+    connection so its claim can commit independently of the ledger write -
+    and which must therefore be told which organization it acts for. With
+    neither an organization nor `unscoped=True` (maintenance scripts only)
+    the session sees no tenant data at all.
     """
     session = SessionLocal()
+    if organization_id is not None:
+        bind_organization(session, organization_id)
+    if unscoped:
+        mark_unscoped(session)
     try:
         yield session
         session.commit()

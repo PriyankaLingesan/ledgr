@@ -15,6 +15,7 @@ import { useNavigate } from 'react-router-dom';
 import { Badge, Button, Panel, PanelHeader, Skeleton } from '../ui/primitives';
 import { EmptyState, ErrorState } from '../ui/Table';
 import { formatRelative } from '../../lib/format';
+import { useAuth } from '../../lib/auth';
 import { useControlExceptions, useCreateInvestigation } from '../../lib/queries';
 import type { ControlException } from '../../lib/types';
 
@@ -25,6 +26,8 @@ function exceptionTone(kind: ControlException['kind']) {
 function InvestigateButton({ exception }: { exception: ControlException }) {
   const navigate = useNavigate();
   const createCase = useCreateInvestigation();
+  const { can } = useAuth();
+  if (!can('investigations:write')) return null;
 
   return (
     <Button

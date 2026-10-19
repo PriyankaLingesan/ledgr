@@ -122,3 +122,36 @@ class AuditEventOut(BaseModel):
     request_id: str | None
     payload: dict[str, Any]
     created_at: datetime
+
+
+class ComponentStatus(BaseModel):
+    status: str  # ok | down | failing | attention | none
+    detail: str
+
+
+class IntegrityCheckStatus(BaseModel):
+    name: str
+    passed: bool
+    detail: str
+
+
+class RecentErrorOut(BaseModel):
+    at: datetime
+    status_code: int
+    code: str
+    path: str
+    request_id: str | None
+
+
+class SystemHealthOut(BaseModel):
+    generated_at: datetime
+    api: ComponentStatus
+    database: ComponentStatus
+    database_latency_ms: float
+    schema_revision: str | None
+    ledger_integrity: ComponentStatus
+    integrity_checks: list[IntegrityCheckStatus]
+    reconciliation: ComponentStatus
+    latest_reconciliation_at: datetime | None
+    requests_by_status_class: dict[str, int]
+    recent_errors: list[RecentErrorOut]
